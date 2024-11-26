@@ -1770,6 +1770,7 @@ struct valkeyServer {
     int active_io_threads_num;                /* Current number of active IO threads, includes main thread. */
     int events_per_io_thread;                 /* Number of events on the event loop to trigger IO threads activation. */
     int prefetch_batch_max_size;              /* Maximum number of keys to prefetch in a single batch */
+    int enable_batch_optimizations;           /* Indicates whether optimizations using batch iterators are on */
     long long events_processed_while_blocked; /* processEventsWhileBlocked() */
     int enable_protected_configs;             /* Enable the modification of protected configs, see PROTECTED_ACTION_ALLOWED_* */
     int enable_debug_cmd;                     /* Enable DEBUG commands, see PROTECTED_ACTION_ALLOWED_* */

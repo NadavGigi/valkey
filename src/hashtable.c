@@ -200,6 +200,9 @@ static_assert(MAX_FILL_PERCENT_SOFT <= MAX_FILL_PERCENT_HARD, "Soft vs hard fill
 #define FAIR_RANDOM_SAMPLE_SIZE (ENTRIES_PER_BUCKET * 40)
 #define WEAK_RANDOM_SAMPLE_SIZE ENTRIES_PER_BUCKET
 
+#define HASTABLE_ITER_REG 0
+#define HASTABLE_ITER_BATCH 1
+
 /* --- Types --- */
 
 /* Design
@@ -300,6 +303,7 @@ typedef struct {
     uint16_t pos_in_bucket;
     uint8_t table;
     uint8_t safe;
+    uint8_t type;
     union {
         /* Unsafe iterator fingerprint for misuse detection. */
         uint64_t fingerprint;
@@ -338,6 +342,24 @@ typedef struct {
     const void *key;
     uint64_t hash;
 } incrementalFind;
+
+typedef struct { 
+    bucket *curr_bucket;
+    short pos;
+    enum {
+        HASHTABLE_ITER_INIT,
+        HASHTABLE_ITER_PAUSED,
+        HASHTABLE_ITER_PREFETCH,
+        HASHTABLE_ITER_READY,
+        HASHTABLE_ITER_FINISHED,
+    } state;
+} hashtableIteratorThread;
+
+typedef struct {
+    iter base; 
+    int width, curThread, activeThreads, paused;
+    hashtableIteratorThread threads[16]; 
+} hashtableBatchIterator;
 
 static_assert(sizeof(hashtableIncrementalFindState) >= sizeof(incrementalFind),
               "Opaque incremental find state size");
@@ -1503,6 +1525,46 @@ void hashtableIncrementalFindInit(hashtableIncrementalFindState *state, hashtabl
     }
 }
 
+int hashtableIsBatchIterator(hashtableIterator *it){
+    return (iteratorFromOpaque(it))->type == HASTABLE_ITER_BATCH;
+}
+
+void hashtableRestartBatchIterator(hashtableIterator *it, hashtable *ht, int safe) 
+{ 
+    hashtableBatchIterator *iter =  (hashtableBatchIterator *)iteratorFromOpaque(it); 
+    assert(hashtableIsBatchIterator(it));
+
+    if (safe)
+        hashtableInitSafeIterator(it, ht);
+    else
+        hashtableInitIterator(it, ht);
+    
+    iter->base.type = HASTABLE_ITER_BATCH;
+    iter->curThread = 0;  
+    for (int i = 0; i < iter->width; i++) {
+        iter->threads[i].state = HASHTABLE_ITER_INIT; 
+        iter->threads[i].curr_bucket = NULL;
+        iter->threads[i].pos = 0;
+    }
+    
+    iter->activeThreads = iter-> width;
+    iter->paused = 0;
+}
+
+
+void hashtableInitBatchIterator(hashtableIterator *it, hashtable *ht, int width, int safe) 
+{ 
+    hashtableBatchIterator *iter =  (hashtableBatchIterator *)iteratorFromOpaque(it);  
+    assert(width > 0 && width <= 16);
+    iter->width = width;
+    iter->base.type = HASTABLE_ITER_BATCH;
+    hashtableRestartBatchIterator(it, ht, safe);
+}
+
+size_t hashtableBatchIteratorDelta(void){
+    return sizeof(hashtableBatchIterator) - sizeof(iter);
+}
+
 /* Returns 1 if more work is needed, 0 when done. Call this function repeatedly
  * until it returns 0. Then use hashtableIncrementalFindGetResult to fetch the
  * result. */
@@ -1580,6 +1642,109 @@ int hashtableIncrementalFindStep(hashtableIncrementalFindState *state) {
         return 0;
     }
     assert(0);
+}
+
+int hashtableNextBatch(iter *it, void **elemptr)
+{ 
+    void *res = NULL;
+    hashtableIteratorThread *th;
+    hashtableBatchIterator *iter = (hashtableBatchIterator *)it;
+    while (iter->activeThreads) {
+        th = &iter->threads[iter->curThread]; 
+        iter->curThread = (iter->curThread + 1) % iter->width;
+
+        if (iter->paused) { 
+            th->state = HASHTABLE_ITER_PAUSED;
+            iter->activeThreads--; 
+            continue; 
+        }
+
+        switch (th->state) {
+            case HASHTABLE_ITER_FINISHED:
+            case HASHTABLE_ITER_PAUSED:
+                // Skip finished or paused threads
+                continue;
+            case HASHTABLE_ITER_PREFETCH:
+            {
+                bucket *b = th->curr_bucket;
+                for (int pos = th->pos; pos < numBucketPoitions(b); pos++) {
+                    if (isPositionFilled(b, pos)) {
+                        prefetch(b->entries[pos]);
+                    }
+                }
+
+                th->state = HASHTABLE_ITER_READY;
+                continue;
+            }
+            case HASHTABLE_ITER_READY:
+            {
+                res = NULL;
+                bucket *b = th->curr_bucket;
+                for (int pos = th->pos; pos < numBucketPoitions(b); pos++) {
+                    if (isPositionFilled(b, pos)) {
+                        th->pos = pos + 1;
+                        res = b->entries[pos];
+                        *elemptr = res;
+                        return 1;
+                    }
+                }
+
+                th->curr_bucket = bucketNext(th->curr_bucket);
+                if (th->curr_bucket  != NULL) {
+                    prefetch(th->curr_bucket);
+                    th->state = HASHTABLE_ITER_PREFETCH;
+                    th->pos = 0;
+                    continue;
+                }
+            }
+            /* fall through */
+            case HASHTABLE_ITER_INIT:
+                while (th->curr_bucket == NULL) {
+                    if (iter->base.index == -1 && iter->base.table == 0) {
+                        /* It's the first call to next. */
+                        if (iter->base.safe) {
+                            hashtablePauseRehashing(iter->base.hashtable);
+                            iter->base.last_seen_size = iter->base.hashtable->used[iter->base.table];
+                        } else {
+                            iter->base.fingerprint = hashtableFingerprint(iter->base.hashtable);
+                        }
+                        if (iter->base.hashtable->tables[0] == NULL) {
+                            /* Empty hashtable. We're done. */
+                            break;
+                        }
+
+                        /* Skip already rehashed buckets. */
+                        if (hashtableIsRehashing(iter->base.hashtable)) {
+                            iter->base.index = iter->base.hashtable->rehash_idx;
+                        }
+                        th->curr_bucket = &iter->base.hashtable->tables[iter->base.table][0];
+                    }
+                    th->pos = 0;
+                    iter->base.index++;
+
+                    if ((size_t)iter->base.index >= numBuckets(iter->base.hashtable->bucket_exp[iter->base.table])) {
+                        if (hashtableIsRehashing(iter->base.hashtable) && iter->base.table == 0) {
+                            iter->base.index = 0;
+                            iter->base.table++;
+                        } else {
+                            /* Done. */
+                            iter->activeThreads--;
+                            th->state = HASHTABLE_ITER_FINISHED; 
+                            break;
+                        }
+                    }
+
+                    th->curr_bucket = &iter->base.hashtable->tables[iter->base.table][iter->base.index];
+                } 
+
+                if (th->state != HASHTABLE_ITER_FINISHED) { 
+                    prefetch(th->curr_bucket);
+                    th->state = HASHTABLE_ITER_PREFETCH;
+                } 
+        }   
+    }
+    
+    return 0;  
 }
 
 /* Call only when hashtableIncrementalFindStep has returned 0.
@@ -1779,6 +1944,7 @@ void hashtableInitIterator(hashtableIterator *iterator, hashtable *ht) {
     iter->table = 0;
     iter->index = -1;
     iter->safe = 0;
+    iter->type = HASTABLE_ITER_REG;
 }
 
 /* Initialize a safe iterator, which is allowed to modify the hash table while
@@ -1849,8 +2015,7 @@ void hashtableReleaseIterator(hashtableIterator *iterator) {
 
 /* Points elemptr to the next entry and returns 1 if there is a next entry.
  * Returns 0 if there are no more entries. */
-int hashtableNext(hashtableIterator *iterator, void **elemptr) {
-    iter *iter = iteratorFromOpaque(iterator);
+int hashtableNextReg(iter *iter, void **elemptr) {
     while (1) {
         if (iter->index == -1 && iter->table == 0) {
             /* It's the first call to next. */
@@ -1920,6 +2085,14 @@ int hashtableNext(hashtableIterator *iterator, void **elemptr) {
         return 1;
     }
     return 0;
+}
+
+int hashtableNext(hashtableIterator *iterator, void **elemptr) {
+    iter *iter = iteratorFromOpaque(iterator);
+    if (iter->type)
+        return hashtableNextBatch(iter, elemptr);
+    else
+        return hashtableNextReg(iter, elemptr);
 }
 
 /* --- Random entries --- */

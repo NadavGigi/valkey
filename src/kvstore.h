@@ -59,6 +59,8 @@ unsigned long kvstoreHashtableRehashingCount(kvstore *kvs);
 unsigned long kvstoreHashtableSize(kvstore *kvs, int didx);
 kvstoreHashtableIterator *kvstoreGetHashtableIterator(kvstore *kvs, int didx);
 kvstoreHashtableIterator *kvstoreGetHashtableSafeIterator(kvstore *kvs, int didx);
+kvstoreHashtableIterator *kvstoreGetHashtableSafeBatchIterator(kvstore *kvs, int didx, int width);
+kvstoreIterator *kvstoreHashtableSafeBatchIteratorInit(kvstore *kvs, int width);
 void kvstoreReleaseHashtableIterator(kvstoreHashtableIterator *kvs_id);
 int kvstoreHashtableIteratorNext(kvstoreHashtableIterator *kvs_di, void **next);
 int kvstoreHashtableRandomEntry(kvstore *kvs, int didx, void **found);

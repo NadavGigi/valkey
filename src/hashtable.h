@@ -151,6 +151,10 @@ hashtableIterator *hashtableCreateIterator(hashtable *ht);
 hashtableIterator *hashtableCreateSafeIterator(hashtable *ht);
 void hashtableReleaseIterator(hashtableIterator *iter);
 int hashtableNext(hashtableIterator *iter, void **elemptr);
+size_t hashtableBatchIteratorDelta(void);
+void hashtableInitBatchIterator(hashtableIterator *it, hashtable *ht, int width, int safe);
+void hashtableRestartBatchIterator(hashtableIterator *it, hashtable *ht, int safe);
+int hashtableIsBatchIterator(hashtableIterator *it);
 
 /* Random entries */
 int hashtableRandomEntry(hashtable *ht, void **found);

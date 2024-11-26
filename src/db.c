@@ -885,9 +885,15 @@ void keysCommand(client *c) {
     kvstoreHashtableIterator *kvs_di = NULL;
     kvstoreIterator *kvs_it = NULL;
     if (pslot != -1) {
-        kvs_di = kvstoreGetHashtableSafeIterator(c->db->keys, pslot);
+        if (server.enable_batch_optimizations)
+            kvs_di = kvstoreGetHashtableSafeBatchIterator(c->db->keys, pslot, server.prefetch_batch_max_size);
+        else
+            kvs_di = kvstoreGetHashtableSafeIterator(c->db->keys, pslot);
     } else {
-        kvs_it = kvstoreIteratorInit(c->db->keys);
+        if (server.enable_batch_optimizations)
+            kvs_it = kvstoreHashtableSafeBatchIteratorInit(c->db->keys, server.prefetch_batch_max_size);
+        else
+            kvs_it = kvstoreIteratorInit(c->db->keys);
     }
     void *next;
     while (kvs_di ? kvstoreHashtableIteratorNext(kvs_di, &next) : kvstoreIteratorNext(kvs_it, &next)) {

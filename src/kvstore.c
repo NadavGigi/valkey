@@ -42,6 +42,7 @@
 #include <stddef.h>
 #include <stdlib.h>
 
+#include "hashtable.h"
 #include "zmalloc.h"
 #include "kvstore.h"
 #include "serverassert.h"
@@ -602,6 +603,7 @@ static hashtable *kvstoreIteratorNextHashtable(kvstoreIterator *kvs_it) {
     if (kvs_it->didx != -1 && kvstoreGetHashtable(kvs_it->kvs, kvs_it->didx)) {
         /* Before we move to the next hashtable, reset the iter of the previous hashtable. */
         hashtableIterator *iter = &kvs_it->di;
+
         hashtableResetIterator(iter);
         /* In the safe iterator context, we may delete entries. */
         freeHashtableIfNeeded(kvs_it->kvs, kvs_it->didx);
@@ -625,7 +627,12 @@ int kvstoreIteratorNext(kvstoreIterator *kvs_it, void **next) {
         /* No current hashtable or reached the end of the hash table. */
         hashtable *ht = kvstoreIteratorNextHashtable(kvs_it);
         if (!ht) return 0;
-        hashtableInitSafeIterator(&kvs_it->di, ht);
+
+        if (hashtableIsBatchIterator(&kvs_it->di))
+            hashtableRestartBatchIterator(&kvs_it->di, ht, 1);
+        else
+            hashtableInitSafeIterator(&kvs_it->di, ht);
+        
         return hashtableNext(&kvs_it->di, next);
     }
 }
@@ -705,6 +712,23 @@ kvstoreHashtableIterator *kvstoreGetHashtableSafeIterator(kvstore *kvs, int didx
     kvs_di->didx = didx;
     hashtableInitSafeIterator(&kvs_di->di, kvstoreGetHashtable(kvs, didx));
     return kvs_di;
+}
+
+kvstoreHashtableIterator *kvstoreGetHashtableSafeBatchIterator(kvstore *kvs, int didx, int width) {
+    kvstoreHashtableIterator *kvs_di = zmalloc(sizeof(*kvs_di) + hashtableBatchIteratorDelta());
+    kvs_di->kvs = kvs;
+    kvs_di->didx = didx;
+    hashtableInitBatchIterator(&kvs_di->di, kvstoreGetHashtable(kvs, didx), width, 1);
+    return kvs_di;
+}
+
+kvstoreIterator *kvstoreHashtableSafeBatchIteratorInit(kvstore *kvs, int width) {
+    kvstoreIterator *kvs_it = zmalloc(sizeof(*kvs_it) +  hashtableBatchIteratorDelta());
+    kvs_it->kvs = kvs;
+    kvs_it->didx = -1;
+    kvs_it->next_didx = kvstoreGetFirstNonEmptyHashtableIndex(kvs_it->kvs);
+    hashtableInitBatchIterator(&kvs_it->di, NULL, width, 1);
+    return kvs_it;
 }
 
 /* Free the kvs_di returned by kvstoreGetHashtableIterator and kvstoreGetHashtableSafeIterator. */
