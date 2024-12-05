@@ -203,6 +203,9 @@ static_assert(MAX_FILL_PERCENT_SOFT <= MAX_FILL_PERCENT_HARD, "Soft vs hard fill
 
 /* --- Types --- */
 
+#define HASTABLE_ITER_REG 0
+#define HASTABLE_ITER_BATCH 1
+
 /* Design
  * ------
  *
@@ -301,6 +304,7 @@ typedef struct {
     uint16_t pos_in_bucket;
     uint8_t table;
     uint8_t safe;
+    uint8_t type;
     union {
         /* Unsafe iterator fingerprint for misuse detection. */
         uint64_t fingerprint;
@@ -339,6 +343,23 @@ typedef struct {
     const void *key;
     uint64_t hash;
 } incrementalFind;
+
+typedef struct { 
+    bucket *curr_bucket;
+    short pos;
+    enum {
+        HASHTABLE_ITER_INIT,
+        HASHTABLE_ITER_PREFETCH,
+        HASHTABLE_ITER_READY,
+        HASHTABLE_ITER_FINISHED,
+    } state;
+} hashtableIteratorThread;
+
+typedef struct {
+    iter base; 
+    int width, curThread, activeThreads;
+    hashtableIteratorThread threads[16]; 
+} hashtableBatchIterator;
 
 static_assert(sizeof(hashtableIncrementalFindState) >= sizeof(incrementalFind),
               "Opaque incremental find state size");
@@ -1750,6 +1771,7 @@ void hashtableInitIterator(hashtableIterator *iterator, hashtable *ht) {
     iter->table = 0;
     iter->index = -1;
     iter->safe = 0;
+    iter->type = HASTABLE_ITER_REG;
 }
 
 /* Initialize a safe iterator, which is allowed to modify the hash table while
@@ -1818,10 +1840,159 @@ void hashtableReleaseIterator(hashtableIterator *iterator) {
     zfree(iter);
 }
 
+/*
+ * hashtableNextBatch: An optimized batch iterator for hashtable traversal
+ *
+ * This function implements a batch iterator that reduces the average time spent on
+ * hashtableNext invocations by ensuring keys and values are in cache before processing.
+ * It mimics multiple parallel scanning threads through interleaved execution of
+ * state machines (INIT, PREFETCH, READY, FINISHED), amortizing memory access time
+ * and bringing data closer to the L1 cache. This approach optimizes cache utilization
+ * and improves overall performance by reducing cache misses and memory access times,
+ * effectively simulating concurrent processing within a single thread.
+ * State machine diagram for each thread:
+ *
+ *           (empty bucket)
+ *        +------------------+
+ *        |                  |
+ *        v                  |          
+ *    +--------+     +------------+     +---------+
+ *    |  INIT  | --> |  PREFETCH  | --> |  READY  |
+ *    +--------+     +------------+     +---------+
+ *      |   ^                ^               |
+ *      |   |                |               |
+ *      |   |                |  (chained     |
+ *      |   |                |   bucket)     |
+ *      |   |                |               |
+ *      |   +----------------+---------------+
+ *      |        (bucket exhausted,
+ *      |         find next bucket)
+ *      |   
+ *      v   
+ *    +----------+
+ *    | FINISHED |
+ *    +----------+
+ *    (no more buckets)
+ */
+int hashtableNextBatch(iter *it, void **elemptr) { 
+    hashtableIteratorThread *th;
+    hashtableBatchIterator *iter = (hashtableBatchIterator *)it;
+
+    while (iter->activeThreads) {
+        th = &iter->threads[iter->curThread]; 
+        iter->curThread = (iter->curThread + 1) % iter->width;
+
+        switch (th->state) {
+            case HASHTABLE_ITER_FINISHED:
+                continue;
+            case HASHTABLE_ITER_PREFETCH:
+            {
+                bucket *b = th->curr_bucket;
+                if (!b->presence) {
+                    th->state = HASHTABLE_ITER_INIT;
+                    continue;
+                }
+
+                for (int pos = th->pos; pos < numBucketPoitions(b); pos++) {
+                    if (isPositionFilled(b, pos)) {
+                        valkey_prefetch(b->entries[pos]);
+                    }
+                }
+
+                th->state = HASHTABLE_ITER_READY;
+                continue;
+            }
+            case HASHTABLE_ITER_READY:
+            {
+                bucket *b = th->curr_bucket;
+                for (int pos = th->pos; pos < numBucketPoitions(b); pos++) {
+                    if (isPositionFilled(b, pos)) {
+                        th->pos = pos + 1;
+                        *elemptr = b->entries[pos];
+                        return 1;
+                    }
+                }
+
+                th->curr_bucket = bucketNext(th->curr_bucket);
+                if (th->curr_bucket  != NULL) {
+                    valkey_prefetch(th->curr_bucket);
+                    th->state = HASHTABLE_ITER_PREFETCH;
+                    th->pos = 0;
+                    continue;
+                }
+            }
+            /* fall through */
+            case HASHTABLE_ITER_INIT:
+                if (iter->base.index == -1 && iter->base.table == 0) {
+                    /* It's the first call to next. */
+                    hashtablePauseRehashing(iter->base.hashtable);
+                    iter->base.last_seen_size = iter->base.hashtable->used[iter->base.table];
+                    
+                    if (iter->base.hashtable->tables[0] == NULL) return 0; /* Empty hashtable. We're done. */
+
+                    /* Skip already rehashed buckets. */
+                    if (hashtableIsRehashing(iter->base.hashtable))
+                        iter->base.index = iter->base.hashtable->rehash_idx;
+                }
+
+                th->pos = 0;
+                iter->base.index++;
+                if ((size_t)iter->base.index >= numBuckets(iter->base.hashtable->bucket_exp[iter->base.table])) {
+                    if (hashtableIsRehashing(iter->base.hashtable) && iter->base.table == 0) {
+                        iter->base.index = 0;
+                        iter->base.table++;
+                    } else {
+                        /* Done. */
+                        iter->activeThreads--;
+                        th->state = HASHTABLE_ITER_FINISHED; 
+                        continue;
+                    }
+                }
+
+                th->curr_bucket = &iter->base.hashtable->tables[iter->base.table][iter->base.index];
+                valkey_prefetch(th->curr_bucket);
+                th->state = HASHTABLE_ITER_PREFETCH;
+            }
+    }
+    
+    return 0;  
+}
+
+int hashtableIsBatchIterator(hashtableIterator *it) {
+    return (iteratorFromOpaque(it))->type == HASTABLE_ITER_BATCH;
+}
+
+void hashtableRestartBatchIterator(hashtableIterator *it, hashtable *ht) { 
+    hashtableBatchIterator *iter = (hashtableBatchIterator *)iteratorFromOpaque(it); 
+    assert(iter->base.type == HASTABLE_ITER_BATCH);
+    hashtableInitSafeIterator(it, ht);
+    iter->activeThreads = iter-> width;
+    iter->base.type = HASTABLE_ITER_BATCH;
+    iter->curThread = 0; 
+
+    for (int i = 0; i < iter->width; i++) {
+        iter->threads[i].state = HASHTABLE_ITER_INIT; 
+        iter->threads[i].curr_bucket = NULL;
+        iter->threads[i].pos = 0;
+    }
+}
+
+void hashtableInitBatchIterator(hashtableIterator *it, hashtable *ht, int width) 
+{ 
+    hashtableBatchIterator *iter =  (hashtableBatchIterator *)iteratorFromOpaque(it);  
+    assert(width > 0);
+    iter->width = width;
+    iter->base.type = HASTABLE_ITER_BATCH;
+    hashtableRestartBatchIterator(it, ht);
+}
+
+size_t hashtableBatchIteratorDelta(void){
+    return sizeof(hashtableBatchIterator) - sizeof(iter);
+}
+
 /* Points elemptr to the next entry and returns 1 if there is a next entry.
  * Returns 0 if there are no more entries. */
-int hashtableNext(hashtableIterator *iterator, void **elemptr) {
-    iter *iter = iteratorFromOpaque(iterator);
+int hashtableNextReg(iter *iter, void **elemptr) {
     while (1) {
         if (iter->index == -1 && iter->table == 0) {
             /* It's the first call to next. */
@@ -1891,6 +2062,14 @@ int hashtableNext(hashtableIterator *iterator, void **elemptr) {
         return 1;
     }
     return 0;
+}
+
+int hashtableNext(hashtableIterator *iterator, void **elemptr) {
+    iter *iter = iteratorFromOpaque(iterator);
+    if (iter->type)
+        return hashtableNextBatch(iter, elemptr);
+    else
+        return hashtableNextReg(iter, elemptr);
 }
 
 /* --- Random entries --- */
