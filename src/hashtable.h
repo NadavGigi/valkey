@@ -38,7 +38,7 @@ typedef struct hashtable hashtable;
 typedef struct hashtableStats hashtableStats;
 
 /* Can types that can be stack allocated. */
-typedef uint64_t hashtableIterator[5];
+typedef uint64_t hashtableIterator[30];
 typedef uint64_t hashtablePosition[2];
 typedef uint64_t hashtableIncrementalFindState[5];
 
@@ -87,6 +87,7 @@ typedef void (*hashtableScanFunction)(void *privdata, void *entry);
 
 /* Constants */
 #define HASHTABLE_BUCKET_SIZE 64 /* bytes, the most common cache line size */
+#define HASHTABLE_ITER_WIDTH 6   /* Number of parallel buckets being processed for batch iteration */
 
 /* Scan flags */
 #define HASHTABLE_SCAN_EMIT_REF (1 << 0)
