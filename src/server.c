@@ -454,6 +454,10 @@ int dictClientKeyCompare(const void *key1, const void *key2) {
     return ((client *)key1)->id == ((client *)key2)->id;
 }
 
+const void *hashtableObjectGetValue(const void *entry) {
+    return ((const robj *)entry)->ptr;
+}
+
 /* Dict compare function for null terminated string */
 int dictCStrKeyCompare(const void *key1, const void *key2) {
     int l1, l2;
@@ -552,6 +556,7 @@ dictType objectKeyHeapPointerValueDictType = {
 
 /* Set hashtable type. Items are SDS strings */
 hashtableType setHashtableType = {
+    .entryGetValue = hashtableObjectGetValue,
     .hashFunction = dictSdsHash,
     .keyCompare = hashtableSdsKeyCompare,
     .entryDestructor = dictSdsDestructor};
@@ -570,7 +575,7 @@ uint64_t hashtableSdsHash(const void *key) {
     return hashtableGenHashFunction((const char *)key, sdslen((char *)key));
 }
 
-const void *hashtableObjectGetKey(const void *entry) {
+static const void *hashtableObjectGetKey(const void *entry) {
     return objectGetKey(entry);
 }
 
@@ -586,6 +591,7 @@ void hashtableObjectDestructor(void *val) {
 
 /* Kvstore->keys, keys are sds strings, vals are Objects. */
 hashtableType kvstoreKeysHashtableType = {
+    .entryGetValue = hashtableObjectGetValue,
     .entryGetKey = hashtableObjectGetKey,
     .hashFunction = hashtableSdsHash,
     .keyCompare = hashtableSdsKeyCompare,
@@ -599,6 +605,7 @@ hashtableType kvstoreKeysHashtableType = {
 
 /* Kvstore->expires */
 hashtableType kvstoreExpiresHashtableType = {
+    .entryGetValue = hashtableObjectGetValue,
     .entryGetKey = hashtableObjectGetKey,
     .hashFunction = hashtableSdsHash,
     .keyCompare = hashtableSdsKeyCompare,
@@ -611,13 +618,15 @@ hashtableType kvstoreExpiresHashtableType = {
 };
 
 /* Command set, hashed by sds string, stores serverCommand structs. */
-hashtableType commandSetType = {.entryGetKey = hashtableCommandGetKey,
+hashtableType commandSetType = {.entryGetValue = hashtableObjectGetValue,
+                                .entryGetKey = hashtableCommandGetKey,
                                 .hashFunction = dictSdsCaseHash,
                                 .keyCompare = hashtableStringKeyCaseCompare,
                                 .instant_rehashing = 1};
 
 /* Sub-command set, hashed by char* string, stores serverCommand structs. */
-hashtableType subcommandSetType = {.entryGetKey = hashtableSubcommandGetKey,
+hashtableType subcommandSetType = {.entryGetValue = hashtableObjectGetValue,
+                                   .entryGetKey = hashtableSubcommandGetKey,
                                    .hashFunction = dictCStrCaseHash,
                                    .keyCompare = hashtableStringKeyCaseCompare,
                                    .instant_rehashing = 1};
@@ -644,6 +653,7 @@ dictType sdsReplyDictType = {
 
 /* Hashtable type without destructor */
 hashtableType sdsReplyHashtableType = {
+    .entryGetValue = hashtableObjectGetValue,
     .hashFunction = dictSdsCaseHash,
     .keyCompare = hashtableSdsKeyCompare};
 
@@ -689,6 +699,7 @@ void hashtableChannelsDictDestructor(void *entry) {
  * channels. The elements are dicts where the keys are clients. The metadata in
  * each dict stores a pointer to the channel name. */
 hashtableType kvstoreChannelHashtableType = {
+    .entryGetValue = hashtableObjectGetValue,
     .entryGetKey = hashtableChannelsDictGetKey,
     .hashFunction = dictObjHash,
     .keyCompare = hashtableObjKeyCompare,

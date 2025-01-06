@@ -48,6 +48,7 @@ typedef uint64_t hashtableIncrementalFindState[5];
  * optional. With all callbacks omitted, the hashtable is effectively a set of
  * pointer-sized integers. */
 typedef struct {
+    const void *(*entryGetValue)(const void *entry);
     /* If the type of an entry is not the same as the type of a key used for
      * lookup, this callback needs to return the key within an entry. */
     const void *(*entryGetKey)(const void *entry);

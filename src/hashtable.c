@@ -379,6 +379,14 @@ static inline int compareKeys(hashtable *ht, const void *key1, const void *key2)
     }
 }
 
+static inline const void *entryGetValue(hashtable *ht, const void *entry) {
+    if (ht->type->entryGetValue != NULL) {
+        return ht->type->entryGetValue(entry);
+    } else {
+        return entry;
+    }
+}
+
 static inline const void *entryGetKey(hashtable *ht, const void *entry) {
     if (ht->type->entryGetKey != NULL) {
         return ht->type->entryGetKey(entry);
@@ -1827,7 +1835,16 @@ void hashtableReleaseIterator(hashtableIterator *iterator) {
     iter *iter = iteratorFromOpaque(iterator);
     zfree(iter);
 }
-
+static void prefetchBucketEntries(bucket *b) {
+    if (b->chained) {
+        valkey_prefetch(bucketNext(b));
+    }
+    for (int pos = 0; pos < numBucketPositions(b); pos++) {
+        if (isPositionFilled(b, pos)) {
+            valkey_prefetch(b->entries[pos]);
+        }
+    }
+}
 /* Points elemptr to the next entry and returns 1 if there is a next entry.
  * Returns 0 if there are no more entries. */
 int hashtableNext(hashtableIterator *iterator, void **elemptr) {
@@ -1890,6 +1907,29 @@ int hashtableNext(hashtableIterator *iterator, void **elemptr) {
             }
         }
         bucket *b = iter->bucket;
+        // if (iter->pos_in_bucket == 0) {
+        //     for (int pos = 0; pos < numBucketPositions(b); pos++) {
+        //         if (isPositionFilled(b, pos)) {
+        //             valkey_prefetch(entryGetValue(iter->hashtable, b->entries[pos]));
+        //         }
+        //     }
+        // }
+        if (iter->pos_in_bucket == 0) {
+            if (b->chained) {
+                prefetchBucketEntries(bucketNext(b));
+            } else {
+                long prefetch_index = iter->index + 1;
+                bucket *prefetch_bucket;
+                while (prefetch_index < numBuckets(iter->hashtable->bucket_exp[iter->table])) {
+                    prefetch_bucket = &iter->hashtable->tables[iter->table][prefetch_index];
+                    if (prefetch_bucket->presence){
+                        prefetchBucketEntries(prefetch_bucket);
+                        break;
+                    }
+                    prefetch_index++;
+                }
+            }
+        }
         if (!isPositionFilled(b, iter->pos_in_bucket)) {
             /* No entry here. */
             continue;
