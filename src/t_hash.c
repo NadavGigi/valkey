@@ -422,7 +422,7 @@ int hashTypeNext(hashTypeIterator *hi) {
         hi->fptr = fptr;
         hi->vptr = vptr;
     } else if (hi->encoding == OBJ_ENCODING_HASHTABLE) {
-        if (!hashtableNext(&hi->iter, &hi->next)) return C_ERR;
+        if (!hashtableNext(&hi->iter, &hi->next, 0)) return C_ERR;
     } else {
         serverPanic("Unknown hash encoding");
     }

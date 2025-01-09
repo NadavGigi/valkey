@@ -46,7 +46,7 @@ size_t kvstoreHashtableMetadataSize(void);
 kvstoreIterator *kvstoreIteratorInit(kvstore *kvs);
 void kvstoreIteratorRelease(kvstoreIterator *kvs_it);
 int kvstoreIteratorGetCurrentHashtableIndex(kvstoreIterator *kvs_it);
-int kvstoreIteratorNext(kvstoreIterator *kvs_it, void **next);
+int kvstoreIteratorNext(kvstoreIterator *kvs_it, void **next, int flags);
 
 /* Rehashing */
 void kvstoreTryResizeHashtables(kvstore *kvs, int limit);

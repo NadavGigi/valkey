@@ -210,7 +210,7 @@ void xorObjectDigest(serverDb *db, robj *keyobj, unsigned char *digest, robj *o)
             hashtableInitIterator(&iter, zs->ht);
 
             void *next;
-            while (hashtableNext(&iter, &next)) {
+            while (hashtableNext(&iter, &next, 0)) {
                 zskiplistNode *node = next;
                 const int len = fpconv_dtoa(node->score, buf);
                 buf[len] = '\0';
@@ -299,7 +299,7 @@ void computeDatasetDigest(unsigned char *final) {
 
         /* Iterate this DB writing every entry */
         void *next;
-        while (kvstoreIteratorNext(kvs_it, &next)) {
+        while (kvstoreIteratorNext(kvs_it, &next, HASHTABLE_ITER_PREFETCH_VALUES)) {
             robj *o = next;
             sds key;
             robj *keyobj;

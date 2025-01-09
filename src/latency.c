@@ -530,7 +530,7 @@ void latencyAllCommandsFillCDF(client *c, hashtable *commands, int *command_with
     hashtableIterator iter;
     hashtableInitSafeIterator(&iter, commands);
     void *next;
-    while (hashtableNext(&iter, &next)) {
+    while (hashtableNext(&iter, &next, 0)) {
         struct serverCommand *cmd = next;
         if (cmd->latency_histogram) {
             addReplyBulkCBuffer(c, cmd->fullname, sdslen(cmd->fullname));
@@ -567,7 +567,7 @@ void latencySpecificCommandsFillCDF(client *c) {
             hashtableIterator iter;
             hashtableInitSafeIterator(&iter, cmd->subcommands_ht);
             void *next;
-            while (hashtableNext(&iter, &next)) {
+            while (hashtableNext(&iter, &next, 0)) {
                 struct serverCommand *sub = next;
                 if (sub->latency_histogram) {
                     addReplyBulkCBuffer(c, sub->fullname, sdslen(sub->fullname));

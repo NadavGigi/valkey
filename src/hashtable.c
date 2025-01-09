@@ -379,6 +379,12 @@ static inline int compareKeys(hashtable *ht, const void *key1, const void *key2)
     }
 }
 
+static inline void entryPrefetchValue(hashtable *ht, const void *entry) {
+    if (ht->type->entryPrefetchValue != NULL) {
+        ht->type->entryPrefetchValue(entry);
+    }
+}
+
 static inline const void *entryGetKey(hashtable *ht, const void *entry) {
     if (ht->type->entryGetKey != NULL) {
         return ht->type->entryGetKey(entry);
@@ -975,6 +981,15 @@ static void prefetchNextBucketEntries(iter *iter, bucket *current_bucket) {
         bucket *next_next_bucket = getNextBucket(next_bucket, next_index + 1, iter->hashtable, iter->table);
         if (next_next_bucket) {
             valkey_prefetch(next_next_bucket);
+        }
+    }
+}
+
+/* Prefetches the values associated with filled entries in the given bucket. */
+static void prefetchBucketValues(bucket *b, hashtable *ht) {
+    for (int pos = 0; pos < numBucketPositions(b); pos++) {
+        if (isPositionFilled(b, pos)) {
+            entryPrefetchValue(ht, b->entries[pos]);
         }
     }
 }
@@ -1874,8 +1889,14 @@ void hashtableReleaseIterator(hashtableIterator *iterator) {
 }
 
 /* Points elemptr to the next entry and returns 1 if there is a next entry.
- * Returns 0 if there are no more entries. */
-int hashtableNext(hashtableIterator *iterator, void **elemptr) {
+ * Returns 0 if there are no more entries.
+ * The 'flags' argument can be used to tweak the behavior of the iterator:
+ * - HASHTABLE_ITER_PREFETCH_VALUES: Enables prefetching of entries values,
+ *   which can improve performance in some scenarios. Because the hashtable is generic and
+ *   doesn't care which object we store, the callback entryPrefetchValue helps
+ *   us prefetch necessary fields of specific object types stored in the hashtable.
+ */
+int hashtableNext(hashtableIterator *iterator, void **elemptr, int flags) {
     iter *iter = iteratorFromOpaque(iterator);
     while (1) {
         if (iter->index == -1 && iter->table == 0) {
@@ -1936,6 +1957,9 @@ int hashtableNext(hashtableIterator *iterator, void **elemptr) {
         }
         bucket *b = iter->bucket;
         if (iter->pos_in_bucket == 0) {
+            if (b->presence && (flags & HASHTABLE_ITER_PREFETCH_VALUES)) {
+                prefetchBucketValues(b, iter->hashtable);
+            }
             prefetchNextBucketEntries(iter, b);
         }
         if (!isPositionFilled(b, iter->pos_in_bucket)) {

@@ -357,7 +357,7 @@ void setTypeReleaseIterator(setTypeIterator *si) {
 int setTypeNext(setTypeIterator *si, char **str, size_t *len, int64_t *llele) {
     if (si->encoding == OBJ_ENCODING_HASHTABLE) {
         void *next;
-        if (!hashtableNext(si->hashtable_iterator, &next)) return -1;
+        if (!hashtableNext(si->hashtable_iterator, &next, 0)) return -1;
         *str = next;
         *len = sdslen(*str);
         *llele = -123456789; /* Not needed. Defensive. */
@@ -1184,7 +1184,7 @@ void srandmemberWithCountCommand(client *c) {
         addReplyArrayLen(c, count);
         serverAssert(count == hashtableSize(ht));
         void *element;
-        while (hashtableNext(&iter, &element)) addReplyBulkSds(c, (sds)element);
+        while (hashtableNext(&iter, &element, 0)) addReplyBulkSds(c, (sds)element);
         hashtableResetIterator(&iter);
         hashtableRelease(ht);
     }

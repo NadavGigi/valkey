@@ -48,6 +48,8 @@ typedef uint64_t hashtableIncrementalFindState[5];
  * optional. With all callbacks omitted, the hashtable is effectively a set of
  * pointer-sized integers. */
 typedef struct {
+    /* Callback to prefetch the value associated with a hashtable entry. */
+    void (*entryPrefetchValue)(const void *entry);
     /* If the type of an entry is not the same as the type of a key used for
      * lookup, this callback needs to return the key within an entry. */
     const void *(*entryGetKey)(const void *entry);
@@ -90,6 +92,9 @@ typedef void (*hashtableScanFunction)(void *privdata, void *entry);
 
 /* Scan flags */
 #define HASHTABLE_SCAN_EMIT_REF (1 << 0)
+
+/* Iterator flags */
+#define HASHTABLE_ITER_PREFETCH_VALUES (1 << 0) /* When set, prefetch entries inner data during iteration to reduce latency */
 
 /* --- Prototypes --- */
 
@@ -150,7 +155,7 @@ void hashtableResetIterator(hashtableIterator *iter);
 hashtableIterator *hashtableCreateIterator(hashtable *ht);
 hashtableIterator *hashtableCreateSafeIterator(hashtable *ht);
 void hashtableReleaseIterator(hashtableIterator *iter);
-int hashtableNext(hashtableIterator *iter, void **elemptr);
+int hashtableNext(hashtableIterator *iter, void **elemptr, int flags);
 
 /* Random entries */
 int hashtableRandomEntry(hashtable *ht, void **found);

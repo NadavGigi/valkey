@@ -2200,7 +2200,7 @@ static int zuiNext(zsetopsrc *op, zsetopval *val) {
             it->is.ii++;
         } else if (op->encoding == OBJ_ENCODING_HASHTABLE) {
             void *next;
-            if (!hashtableNext(it->ht.iter, &next)) return 0;
+            if (!hashtableNext(it->ht.iter, &next, 0)) return 0;
             val->ele = next;
             val->score = 1.0;
         } else if (op->encoding == OBJ_ENCODING_LISTPACK) {
@@ -2351,7 +2351,7 @@ static size_t zsetHashtableGetMaxElementLength(hashtable *ht, size_t *totallen) 
     hashtableIterator iter;
     hashtableInitIterator(&iter, ht);
     void *next;
-    while (hashtableNext(&iter, &next)) {
+    while (hashtableNext(&iter, &next, 0)) {
         zskiplistNode *node = next;
         size_t elelen = sdslen(node->ele);
         if (elelen > maxelelen) maxelelen = elelen;
@@ -2752,7 +2752,7 @@ static void zunionInterDiffGenericCommand(client *c, robj *dstkey, int numkeysIn
         hashtableInitIterator(&iter, dstzset->ht);
 
         void *next;
-        while (hashtableNext(&iter, &next)) {
+        while (hashtableNext(&iter, &next, 0)) {
             zskiplistNode *node = next;
             zslInsertNode(dstzset->zsl, node);
         }

@@ -78,7 +78,7 @@ int test_kvstoreIteratorRemoveAllKeysNoDeleteEmptyHashtable(int argc, char **arg
     }
 
     kvs_it = kvstoreIteratorInit(kvs1);
-    while (kvstoreIteratorNext(kvs_it, &key)) {
+    while (kvstoreIteratorNext(kvs_it, &key, 0)) {
         curr_slot = kvstoreIteratorGetCurrentHashtableIndex(kvs_it);
         TEST_ASSERT(kvstoreHashtableDelete(kvs1, curr_slot, key));
     }
@@ -111,7 +111,7 @@ int test_kvstoreIteratorRemoveAllKeysDeleteEmptyHashtable(int argc, char **argv,
     }
 
     kvs_it = kvstoreIteratorInit(kvs2);
-    while (kvstoreIteratorNext(kvs_it, &key)) {
+    while (kvstoreIteratorNext(kvs_it, &key, 0)) {
         curr_slot = kvstoreIteratorGetCurrentHashtableIndex(kvs_it);
         TEST_ASSERT(kvstoreHashtableDelete(kvs2, curr_slot, key));
     }

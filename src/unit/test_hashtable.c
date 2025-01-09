@@ -548,7 +548,7 @@ int test_iterator(int argc, char **argv, int flags) {
     hashtableIterator iter;
     void *next;
     hashtableInitIterator(&iter, ht);
-    while (hashtableNext(&iter, &next)) {
+    while (hashtableNext(&iter, &next, 0)) {
         uint8_t *entry = next;
         num_returned++;
         TEST_ASSERT(entry >= entry_array && entry < entry_array + count);
@@ -593,7 +593,7 @@ int test_safe_iterator(int argc, char **argv, int flags) {
     hashtableIterator iter;
     void *next;
     hashtableInitSafeIterator(&iter, ht);
-    while (hashtableNext(&iter, &next)) {
+    while (hashtableNext(&iter, &next, 0)) {
         uint8_t *entry = next;
         size_t index = entry - entry_counts;
         num_returned++;
@@ -659,7 +659,7 @@ int test_compact_bucket_chain(int argc, char **argv, int flags) {
     hashtableIterator iter;
     hashtableInitSafeIterator(&iter, ht);
     void *entry;
-    while (hashtableNext(&iter, &entry)) {
+    while (hashtableNext(&iter, &entry, 0)) {
         /* As long as the iterator is still returning entries from the same
          * bucket chain, the bucket chain is not compacted, so it still has the
          * same number of buckets. */

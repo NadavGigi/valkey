@@ -889,7 +889,7 @@ ssize_t rdbSaveObject(rio *rdb, robj *o, robj *key, int dbid) {
             hashtableIterator iterator;
             hashtableInitIterator(&iterator, set);
             void *next;
-            while (hashtableNext(&iterator, &next)) {
+            while (hashtableNext(&iterator, &next, 0)) {
                 sds ele = next;
                 if ((n = rdbSaveRawString(rdb, (unsigned char *)ele, sdslen(ele))) == -1) {
                     hashtableResetIterator(&iterator);
@@ -961,7 +961,7 @@ ssize_t rdbSaveObject(rio *rdb, robj *o, robj *key, int dbid) {
             hashtableIterator iter;
             hashtableInitIterator(&iter, ht);
             void *next;
-            while (hashtableNext(&iter, &next)) {
+            while (hashtableNext(&iter, &next, HASHTABLE_ITER_PREFETCH_VALUES)) {
                 sds field = hashTypeEntryGetField(next);
                 sds value = hashTypeEntryGetValue(next);
 
@@ -1353,7 +1353,7 @@ ssize_t rdbSaveDb(rio *rdb, int dbid, int rdbflags, long *key_counter) {
     int last_slot = -1;
     /* Iterate this DB writing every entry */
     void *next;
-    while (kvstoreIteratorNext(kvs_it, &next)) {
+    while (kvstoreIteratorNext(kvs_it, &next, HASHTABLE_ITER_PREFETCH_VALUES)) {
         robj *o = next;
         int curr_slot = kvstoreIteratorGetCurrentHashtableIndex(kvs_it);
         /* Save slot info. */

@@ -900,7 +900,7 @@ void keysCommand(client *c) {
         kvs_it = kvstoreIteratorInit(c->db->keys);
     }
     void *next;
-    while (kvs_di ? kvstoreHashtableIteratorNext(kvs_di, &next) : kvstoreIteratorNext(kvs_it, &next)) {
+    while (kvs_di ? kvstoreHashtableIteratorNext(kvs_di, &next) : kvstoreIteratorNext(kvs_it, &next, 0)) {
         robj *val = next;
         sds key = objectGetKey(val);
         if (allkeys || stringmatchlen(pattern, plen, key, sdslen(key), 0)) {

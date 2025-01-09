@@ -617,16 +617,17 @@ int kvstoreIteratorGetCurrentHashtableIndex(kvstoreIterator *kvs_it) {
     return kvs_it->didx;
 }
 
-/* Fetches the next element and returns 1. Returns 0 if there are no more elements. */
-int kvstoreIteratorNext(kvstoreIterator *kvs_it, void **next) {
-    if (kvs_it->didx != -1 && hashtableNext(&kvs_it->di, next)) {
+/* Fetches the next element and returns 1. Returns 0 if there are no more elements.
+ * The 'flags' argument can be used to tweak the behavior of the iterator. */
+int kvstoreIteratorNext(kvstoreIterator *kvs_it, void **next, int flags) {
+    if (kvs_it->didx != -1 && hashtableNext(&kvs_it->di, next, flags)) {
         return 1;
     } else {
         /* No current hashtable or reached the end of the hash table. */
         hashtable *ht = kvstoreIteratorNextHashtable(kvs_it);
         if (!ht) return 0;
         hashtableInitSafeIterator(&kvs_it->di, ht);
-        return hashtableNext(&kvs_it->di, next);
+        return hashtableNext(&kvs_it->di, next, flags);
     }
 }
 
@@ -724,7 +725,7 @@ int kvstoreHashtableIteratorNext(kvstoreHashtableIterator *kvs_di, void **next) 
     /* The hashtable may be deleted during the iteration process, so here need to check for NULL. */
     hashtable *ht = kvstoreGetHashtable(kvs_di->kvs, kvs_di->didx);
     if (!ht) return 0;
-    return hashtableNext(&kvs_di->di, next);
+    return hashtableNext(&kvs_di->di, next, 0);
 }
 
 int kvstoreHashtableRandomEntry(kvstore *kvs, int didx, void **entry) {

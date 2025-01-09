@@ -576,6 +576,14 @@ const void *hashtableObjectGetKey(const void *entry) {
     return objectGetKey(entry);
 }
 
+/* Prefetch the value if it's not embedded. */
+void hashtableObjectPrefetchValue(const void *entry) {
+    const robj *obj = entry;
+    if (obj->encoding != OBJ_ENCODING_EMBSTR) {
+        valkey_prefetch(obj->ptr);
+    }
+}
+
 int hashtableObjKeyCompare(const void *key1, const void *key2) {
     const robj *o1 = key1, *o2 = key2;
     return hashtableSdsKeyCompare(o1->ptr, o2->ptr);
@@ -588,6 +596,7 @@ void hashtableObjectDestructor(void *val) {
 
 /* Kvstore->keys, keys are sds strings, vals are Objects. */
 hashtableType kvstoreKeysHashtableType = {
+    .entryPrefetchValue = hashtableObjectPrefetchValue,
     .entryGetKey = hashtableObjectGetKey,
     .hashFunction = hashtableSdsHash,
     .keyCompare = hashtableSdsKeyCompare,
@@ -601,6 +610,7 @@ hashtableType kvstoreKeysHashtableType = {
 
 /* Kvstore->expires */
 hashtableType kvstoreExpiresHashtableType = {
+    .entryPrefetchValue = hashtableObjectPrefetchValue,
     .entryGetKey = hashtableObjectGetKey,
     .hashFunction = hashtableSdsHash,
     .keyCompare = hashtableSdsKeyCompare,
@@ -630,12 +640,18 @@ const void *hashHashtableTypeGetKey(const void *entry) {
     return (const void *)hashTypeEntryGetField(hash_entry);
 }
 
+void hashHashtableTypePrefetchValue(const void *entry) {
+    const hashTypeEntry *hash_entry = entry;
+    valkey_prefetch(hashTypeEntryGetValue(hash_entry));
+}
+
 void hashHashtableTypeDestructor(void *entry) {
     hashTypeEntry *hash_entry = entry;
     freeHashTypeEntry(hash_entry);
 }
 
 hashtableType hashHashtableType = {
+    .entryPrefetchValue = hashHashtableTypePrefetchValue,
     .hashFunction = dictSdsHash,
     .entryGetKey = hashHashtableTypeGetKey,
     .keyCompare = hashtableSdsKeyCompare,
@@ -3202,7 +3218,7 @@ void resetCommandTableStats(hashtable *commands) {
     hashtableIterator iter;
     void *next;
     hashtableInitSafeIterator(&iter, commands);
-    while (hashtableNext(&iter, &next)) {
+    while (hashtableNext(&iter, &next, 0)) {
         struct serverCommand *c = next;
         c->microseconds = 0;
         c->calls = 0;
@@ -4985,7 +5001,7 @@ void addReplyCommandSubCommands(client *c,
     void *next;
     hashtableIterator iter;
     hashtableInitSafeIterator(&iter, cmd->subcommands_ht);
-    while (hashtableNext(&iter, &next)) {
+    while (hashtableNext(&iter, &next, 0)) {
         struct serverCommand *sub = next;
         if (use_map) addReplyBulkCBuffer(c, sub->fullname, sdslen(sub->fullname));
         reply_function(c, sub);
@@ -5147,7 +5163,7 @@ void commandCommand(client *c) {
     void *next;
     addReplyArrayLen(c, hashtableSize(server.commands));
     hashtableInitIterator(&iter, server.commands);
-    while (hashtableNext(&iter, &next)) {
+    while (hashtableNext(&iter, &next, 0)) {
         struct serverCommand *cmd = next;
         addReplyCommandInfo(c, cmd);
     }
@@ -5206,7 +5222,7 @@ void commandListWithFilter(client *c, hashtable *commands, commandListFilter fil
     hashtableIterator iter;
     void *next;
     hashtableInitIterator(&iter, commands);
-    while (hashtableNext(&iter, &next)) {
+    while (hashtableNext(&iter, &next, 0)) {
         struct serverCommand *cmd = next;
         if (!shouldFilterFromCommandList(cmd, &filter)) {
             addReplyBulkCBuffer(c, cmd->fullname, sdslen(cmd->fullname));
@@ -5225,7 +5241,7 @@ void commandListWithoutFilter(client *c, hashtable *commands, int *numcmds) {
     hashtableIterator iter;
     void *next;
     hashtableInitIterator(&iter, commands);
-    while (hashtableNext(&iter, &next)) {
+    while (hashtableNext(&iter, &next, 0)) {
         struct serverCommand *cmd = next;
         addReplyBulkCBuffer(c, cmd->fullname, sdslen(cmd->fullname));
         (*numcmds)++;
@@ -5287,7 +5303,7 @@ void commandInfoCommand(client *c) {
         void *next;
         addReplyArrayLen(c, hashtableSize(server.commands));
         hashtableInitIterator(&iter, server.commands);
-        while (hashtableNext(&iter, &next)) {
+        while (hashtableNext(&iter, &next, 0)) {
             struct serverCommand *cmd = next;
             addReplyCommandInfo(c, cmd);
         }
@@ -5309,7 +5325,7 @@ void commandDocsCommand(client *c) {
         void *next;
         addReplyMapLen(c, hashtableSize(server.commands));
         hashtableInitIterator(&iter, server.commands);
-        while (hashtableNext(&iter, &next)) {
+        while (hashtableNext(&iter, &next, 0)) {
             struct serverCommand *cmd = next;
             addReplyBulkCBuffer(c, cmd->fullname, sdslen(cmd->fullname));
             addReplyCommandDocs(c, cmd);
@@ -5438,7 +5454,7 @@ sds genValkeyInfoStringCommandStats(sds info, hashtable *commands) {
     hashtableIterator iter;
     void *next;
     hashtableInitSafeIterator(&iter, commands);
-    while (hashtableNext(&iter, &next)) {
+    while (hashtableNext(&iter, &next, 0)) {
         struct serverCommand *c = next;
         char *tmpsafe;
         if (c->calls || c->failed_calls || c->rejected_calls) {
@@ -5475,7 +5491,7 @@ sds genValkeyInfoStringLatencyStats(sds info, hashtable *commands) {
     hashtableIterator iter;
     void *next;
     hashtableInitSafeIterator(&iter, commands);
-    while (hashtableNext(&iter, &next)) {
+    while (hashtableNext(&iter, &next, 0)) {
         struct serverCommand *c = next;
         char *tmpsafe;
         if (c->latency_histogram) {

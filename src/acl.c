@@ -657,7 +657,7 @@ void ACLChangeSelectorPerm(aclSelector *selector, struct serverCommand *cmd, int
         hashtableIterator iter;
         hashtableInitSafeIterator(&iter, cmd->subcommands_ht);
         void *next;
-        while (hashtableNext(&iter, &next)) {
+        while (hashtableNext(&iter, &next, 0)) {
             struct serverCommand *sub = next;
             ACLSetSelectorCommandBit(selector, sub->id, allow);
         }
@@ -675,7 +675,7 @@ void ACLSetSelectorCommandBitsForCategory(hashtable *commands, aclSelector *sele
     hashtableIterator iter;
     hashtableInitIterator(&iter, commands);
     void *next;
-    while (hashtableNext(&iter, &next)) {
+    while (hashtableNext(&iter, &next, 0)) {
         struct serverCommand *cmd = next;
         if (cmd->acl_categories & cflag) {
             ACLChangeSelectorPerm(selector, cmd, value);
@@ -743,7 +743,7 @@ void ACLCountCategoryBitsForCommands(hashtable *commands,
     hashtableIterator iter;
     hashtableInitIterator(&iter, commands);
     void *next;
-    while (hashtableNext(&iter, &next)) {
+    while (hashtableNext(&iter, &next, 0)) {
         struct serverCommand *cmd = next;
         if (cmd->acl_categories & cflag) {
             if (ACLGetSelectorCommandBit(selector, cmd->id))
@@ -2767,7 +2767,7 @@ void aclCatWithFlags(client *c, hashtable *commands, uint64_t cflag, int *arrayl
     hashtableIterator iter;
     hashtableInitIterator(&iter, commands);
     void *next;
-    while (hashtableNext(&iter, &next)) {
+    while (hashtableNext(&iter, &next, 0)) {
         struct serverCommand *cmd = next;
         if (cmd->acl_categories & cflag) {
             addReplyBulkCBuffer(c, cmd->fullname, sdslen(cmd->fullname));

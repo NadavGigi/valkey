@@ -632,7 +632,7 @@ void dismissSetObject(robj *o, size_t size_hint) {
             hashtableIterator iter;
             hashtableInitIterator(&iter, ht);
             void *next;
-            while (hashtableNext(&iter, &next)) {
+            while (hashtableNext(&iter, &next, 0)) {
                 sds item = next;
                 dismissSds(item);
             }
@@ -684,7 +684,7 @@ void dismissHashObject(robj *o, size_t size_hint) {
             hashtableIterator iter;
             hashtableInitIterator(&iter, ht);
             void *next;
-            while (hashtableNext(&iter, &next)) {
+            while (hashtableNext(&iter, &next, 0)) {
                 dismissHashTypeEntry(next);
             }
             hashtableResetIterator(&iter);
@@ -1158,7 +1158,7 @@ size_t objectComputeSize(robj *key, robj *o, size_t sample_size, int dbid) {
             hashtableIterator iter;
             hashtableInitIterator(&iter, ht);
             void *next;
-            while (hashtableNext(&iter, &next) && samples < sample_size) {
+            while (hashtableNext(&iter, &next, 0) && samples < sample_size) {
                 sds element = next;
                 elesize += sdsAllocSize(element);
                 samples++;
@@ -1201,7 +1201,7 @@ size_t objectComputeSize(robj *key, robj *o, size_t sample_size, int dbid) {
             void *next;
 
             asize = sizeof(*o) + hashtableMemUsage(ht);
-            while (hashtableNext(&iter, &next) && samples < sample_size) {
+            while (hashtableNext(&iter, &next, 0) && samples < sample_size) {
                 elesize += hashTypeEntryAllocSize(next);
                 samples++;
             }

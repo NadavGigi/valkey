@@ -449,7 +449,7 @@ void sortCommandGeneric(client *c, int readonly) {
         hashtableIterator iter;
         hashtableInitIterator(&iter, ht);
         void *next;
-        while (hashtableNext(&iter, &next)) {
+        while (hashtableNext(&iter, &next, 0)) {
             zskiplistNode *node = next;
             vector[j].obj = createStringObject(node->ele, sdslen(node->ele));
             vector[j].u.score = 0;

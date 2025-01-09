@@ -1893,7 +1893,7 @@ int rewriteSortedSetObject(rio *r, robj *key, robj *o) {
         hashtableIterator iter;
         hashtableInitIterator(&iter, zs->ht);
         void *next;
-        while (hashtableNext(&iter, &next)) {
+        while (hashtableNext(&iter, &next, 0)) {
             zskiplistNode *node = next;
             if (count == 0) {
                 int cmd_items = (items > AOF_REWRITE_ITEMS_PER_CMD) ? AOF_REWRITE_ITEMS_PER_CMD : items;
@@ -2220,7 +2220,7 @@ int rewriteAppendOnlyFileRio(rio *aof) {
         kvs_it = kvstoreIteratorInit(db->keys);
         /* Iterate this DB writing every entry */
         void *next;
-        while (kvstoreIteratorNext(kvs_it, &next)) {
+        while (kvstoreIteratorNext(kvs_it, &next, HASHTABLE_ITER_PREFETCH_VALUES)) {
             robj *o = next;
             sds keystr;
             robj key;
