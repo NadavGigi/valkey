@@ -300,7 +300,7 @@ typedef struct {
     long index;
     uint16_t pos_in_bucket;
     uint8_t table;
-    uint8_t safe;
+    int flags;
     union {
         /* Unsafe iterator fingerprint for misuse detection. */
         uint64_t fingerprint;
@@ -376,6 +376,12 @@ static inline int compareKeys(hashtable *ht, const void *key1, const void *key2)
         return ht->type->keyCompare(key1, key2);
     } else {
         return key1 != key2;
+    }
+}
+
+static inline void entryPrefetchValue(hashtable *ht, const void *entry) {
+    if (ht->type->entryPrefetchValue != NULL) {
+        ht->type->entryPrefetchValue(entry);
     }
 }
 
@@ -975,6 +981,15 @@ static void prefetchNextBucketEntries(iter *iter, bucket *current_bucket) {
         bucket *next_next_bucket = getNextBucket(next_bucket, next_index + 1, iter->hashtable, iter->table);
         if (next_next_bucket) {
             valkey_prefetch(next_next_bucket);
+        }
+    }
+}
+
+/* Prefetches the values associated with filled entries in the given bucket. */
+static void prefetchBucketValues(bucket *b, hashtable *ht) {
+    for (int pos = 0; pos < numBucketPositions(b); pos++) {
+        if (isPositionFilled(b, pos)) {
+            entryPrefetchValue(ht, b->entries[pos]);
         }
     }
 }
@@ -1792,55 +1807,66 @@ size_t hashtableScanDefrag(hashtable *ht, size_t cursor, hashtableScanFunction f
 
 /* --- Iterator --- */
 
-/* Initialize a iterator, that is not allowed to insert, delete or even lookup
- * entries in the hashtable, because such operations can trigger incremental
- * rehashing which moves entries around and confuses the iterator. Only
- * hashtableNext is allowed. Each entry is returned exactly once. Call
- * hashtableResetIterator when you are done. See also
- * hashtableInitSafeIterator. */
-void hashtableInitIterator(hashtableIterator *iterator, hashtable *ht) {
+/* Initialize an iterator for a hashtable.
+ *
+ * The 'flags' argument can be used to tweak the behaviour. It's a bitwise-or
+ * (zero means no flags) of the following:
+ *
+ * - HASHTABLE_ITER_SAFE: Use a safe iterator that can handle concurrent
+ *   modifications to the hash table.
+ * - HASHTABLE_ITER_PREFETCH_VALUES: Enables prefetching of entries values,
+ *   which can improve performance in some scenarios. Because the hashtable is generic and
+ *   doesn't care which object we store, the callback entryPrefetchValue helps
+ *   us prefetch necessary fields of specific object types stored in the hashtable.
+ *
+ * For a non-safe iterator (default, when HASHTABLE_ITER_SAFE is not set):
+ * It is not allowed to insert, delete or even lookup entries in the hashtable,
+ * because such operations can trigger incremental rehashing which moves entries
+ * around and confuses the iterator. Only hashtableNext is allowed. Each entry
+ * is returned exactly once.
+ *
+ * For a safe iterator (when HASHTABLE_ITER_SAFE is set):
+ * It is allowed to modify the hash table while iterating. It pauses incremental
+ * rehashing to prevent entries from moving around. It's allowed to insert and
+ * replace entries. Deleting entries is only allowed for the entry that was just
+ * returned by hashtableNext. Deleting other entries is possible, but doing so
+ * can cause internal fragmentation, so don't.
+ *
+ * Guarantees for safe iterators:
+ *
+ * - Entries that are in the hash table for the entire iteration are returned
+ *   exactly once.
+ * - Entries that are deleted or replaced after they have been returned are not
+ *   returned again.
+ * - Entries that are replaced before they've been returned by the iterator will
+ *   be returned.
+ * - Entries that are inserted during the iteration may or may not be returned
+ *   by the iterator.
+ *
+ * Call hashtableNext to fetch each entry. You must call hashtableResetIterator
+ * when you are done with the iterator.
+ */
+void hashtableInitIterator(hashtableIterator *iterator, hashtable *ht, int flags) {
     iter *iter;
     iter = iteratorFromOpaque(iterator);
     iter->hashtable = ht;
     iter->table = 0;
     iter->index = -1;
-    iter->safe = 0;
+    iter->flags = flags;
 }
 
-/* Initialize a safe iterator, which is allowed to modify the hash table while
- * iterating. It pauses incremental rehashing to prevent entries from moving
- * around. Call hashtableNext to fetch each entry. You must call
- * hashtableResetIterator when you are done with a safe iterator.
- *
- * It's allowed to insert and replace entries. Deleting entries is only allowed
- * for the entry that was just returned by hashtableNext. Deleting other entries
- * is possible, but doing so can cause internal fragmentation, so don't.
- *
- * Guarantees:
- *
- * - Entries that are in the hash table for the entire iteration are returned
- *   exactly once.
- *
- * - Entries that are deleted or replaced after they have been returned are not
- *   returned again.
- *
- * - Entries that are replaced before they've been returned by the iterator will
- *   be returned.
- *
- * - Entries that are inserted during the iteration may or may not be returned
- *   by the iterator.
- */
-void hashtableInitSafeIterator(hashtableIterator *iterator, hashtable *ht) {
-    hashtableInitIterator(iterator, ht);
+/* This function reinitializes the iterator for the provided hashtable while
+ * preserving the flags from its previous initialization. */
+void hashtableReinitIterator(hashtableIterator *iterator, hashtable *ht) {
     iter *iter = iteratorFromOpaque(iterator);
-    iter->safe = 1;
+    hashtableInitIterator(iterator, ht, iter->flags);
 }
 
 /* Resets a stack-allocated iterator. */
 void hashtableResetIterator(hashtableIterator *iterator) {
     iter *iter = iteratorFromOpaque(iterator);
     if (!(iter->index == -1 && iter->table == 0)) {
-        if (iter->safe) {
+        if (iter->flags & HASHTABLE_ITER_SAFE) {
             hashtableResumeRehashing(iter->hashtable);
             assert(iter->hashtable->pause_rehash >= 0);
         } else {
@@ -1850,19 +1876,11 @@ void hashtableResetIterator(hashtableIterator *iterator) {
 }
 
 /* Allocates and initializes an iterator. */
-hashtableIterator *hashtableCreateIterator(hashtable *ht) {
+hashtableIterator *hashtableCreateIterator(hashtable *ht, int flags) {
     iter *iter = zmalloc(sizeof(*iter));
     hashtableIterator *opaque = iteratorToOpaque(iter);
-    hashtableInitIterator(opaque, ht);
+    hashtableInitIterator(opaque, ht, flags);
     return opaque;
-}
-
-/* Allocates and initializes a safe iterator. */
-hashtableIterator *hashtableCreateSafeIterator(hashtable *ht) {
-    hashtableIterator *iterator = hashtableCreateIterator(ht);
-    iter *iter = iteratorFromOpaque(iterator);
-    iter->safe = 1;
-    return iterator;
 }
 
 /* Resets and frees the memory of an allocated iterator, i.e. one created using
@@ -1880,7 +1898,7 @@ int hashtableNext(hashtableIterator *iterator, void **elemptr) {
     while (1) {
         if (iter->index == -1 && iter->table == 0) {
             /* It's the first call to next. */
-            if (iter->safe) {
+            if (iter->flags & HASHTABLE_ITER_SAFE) {
                 hashtablePauseRehashing(iter->hashtable);
                 iter->last_seen_size = iter->hashtable->used[iter->table];
             } else {
@@ -1907,7 +1925,7 @@ int hashtableNext(hashtableIterator *iterator, void **elemptr) {
                 iter->bucket = getChildBucket(iter->bucket);
             } else if (iter->pos_in_bucket >= ENTRIES_PER_BUCKET) {
                 /* Bucket index done. */
-                if (iter->safe) {
+                if (iter->flags & HASHTABLE_ITER_SAFE) {
                     /* If entries in this bucket chain have been deleted,
                      * they've left empty spaces in the buckets. The chain is
                      * not automatically compacted when rehashing is paused. If
@@ -1936,6 +1954,9 @@ int hashtableNext(hashtableIterator *iterator, void **elemptr) {
         }
         bucket *b = iter->bucket;
         if (iter->pos_in_bucket == 0) {
+            if (b->presence && (iter->flags & HASHTABLE_ITER_PREFETCH_VALUES)) {
+                prefetchBucketValues(b, iter->hashtable);
+            }
             prefetchNextBucketEntries(iter, b);
         }
         if (!isPositionFilled(b, iter->pos_in_bucket)) {

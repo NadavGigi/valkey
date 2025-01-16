@@ -48,6 +48,8 @@ typedef uint64_t hashtableIncrementalFindState[5];
  * optional. With all callbacks omitted, the hashtable is effectively a set of
  * pointer-sized integers. */
 typedef struct {
+    /* Callback to prefetch the value associated with a hashtable entry. */
+    void (*entryPrefetchValue)(const void *entry);
     /* If the type of an entry is not the same as the type of a key used for
      * lookup, this callback needs to return the key within an entry. */
     const void *(*entryGetKey)(const void *entry);
@@ -90,6 +92,10 @@ typedef void (*hashtableScanFunction)(void *privdata, void *entry);
 
 /* Scan flags */
 #define HASHTABLE_SCAN_EMIT_REF (1 << 0)
+
+/* Iterator flags */
+#define HASHTABLE_ITER_SAFE (1 << 0)
+#define HASHTABLE_ITER_PREFETCH_VALUES (1 << 1)
 
 /* --- Prototypes --- */
 
@@ -144,11 +150,10 @@ int hashtableIncrementalFindGetResult(hashtableIncrementalFindState *state, void
 /* Iteration & scan */
 size_t hashtableScan(hashtable *ht, size_t cursor, hashtableScanFunction fn, void *privdata);
 size_t hashtableScanDefrag(hashtable *ht, size_t cursor, hashtableScanFunction fn, void *privdata, void *(*defragfn)(void *), int flags);
-void hashtableInitIterator(hashtableIterator *iter, hashtable *ht);
-void hashtableInitSafeIterator(hashtableIterator *iter, hashtable *ht);
+void hashtableInitIterator(hashtableIterator *iter, hashtable *ht, int flags);
+void hashtableReinitIterator(hashtableIterator *iterator, hashtable *ht);
 void hashtableResetIterator(hashtableIterator *iter);
-hashtableIterator *hashtableCreateIterator(hashtable *ht);
-hashtableIterator *hashtableCreateSafeIterator(hashtable *ht);
+hashtableIterator *hashtableCreateIterator(hashtable *ht, int flags);
 void hashtableReleaseIterator(hashtableIterator *iter);
 int hashtableNext(hashtableIterator *iter, void **elemptr);
 
