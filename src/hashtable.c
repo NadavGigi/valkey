@@ -1537,16 +1537,19 @@ void hashtableTwoPhasePopDelete(hashtable *ht, hashtablePosition *pos) {
  * hashtableIncrementalFindStep on them in a round-robin order until all of them
  * are complete. Finally, if necessary, call hashtableIncrementalFindGetResult.
  */
+void hashtableDump(hashtable *hashtable);
 void hashtableIncrementalFindInit(hashtableIncrementalFindState *state, hashtable *ht, const void *key) {
     incrementalFind *data = incrementalFindFromOpaque(state);
     if (hashtableSize(ht) == 0) {
         data->state = HASHTABLE_NOT_FOUND;
     } else {
+        hashtableDump(ht);
         data->state = HASHTABLE_NEXT_BUCKET;
         data->bucket = NULL;
         data->hashtable = ht;
         data->key = key;
         data->hash = hashKey(ht, key);
+        printf("key - %s state- %d\n",(char*)key, data->state);
     }
 }
 
@@ -1644,39 +1647,19 @@ int hashtableIncrementalFindGetResult(hashtableIncrementalFindState *state, void
     }
 }
 
-#define HashTableMaxBatchSize 8  // Adjust as needed
-
-typedef struct {
-    const void* key;
-    hashtable *ht;
-    hashtableIncrementalFindState state;
-} hashtableLookupItem;
-
-typedef struct {
-    int width;
-    hashtableLookupItem items[HashTableMaxBatchSize];
-} hashtableBatchLookup;
-
-void hashtableFindBatch(hashtableBatchLookup *batch_lookup) {
-    int i, done = 0;
-    hashtableLookupItem *item;
-    assert(batch_lookup->width <= HashTableMaxBatchSize);
-    for (i = 0; i < batch_lookup->width; i++) {
-        item = &batch_lookup->items[i];
-        if (!item->key || !item->ht) {
-            done++;
-            continue;
-        }
-        hashtableIncrementalFindInit(&item->state, item->ht, item->key);
-    }
-    while (done < batch_lookup->width) {
-        for (i = 0; i < batch_lookup->width; i++) {
-            item = &batch_lookup->items[i];
-            if (!hashtableIncrementalFindStep(&item->state)) {
-                done++;
+void hashtableIncrementalFindBatch(hashtableIncrementalFindState *states, int width) {
+    size_t num_left;
+    do {
+        num_left = width;
+        for (int i = 0; i < width; i++) {
+            
+            printf("key - %d\n",i);
+            if (hashtableIncrementalFindStep(&states[i]) == 0) {
+                num_left--;
             }
         }
-    }
+    } while (num_left > 0);
+    printf("out\n");
 }
 
 /* --- Scan --- */

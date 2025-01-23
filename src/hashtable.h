@@ -146,6 +146,7 @@ int hashtableReplaceReallocatedEntry(hashtable *ht, const void *old_entry, void 
 void hashtableIncrementalFindInit(hashtableIncrementalFindState *state, hashtable *ht, const void *key);
 int hashtableIncrementalFindStep(hashtableIncrementalFindState *state);
 int hashtableIncrementalFindGetResult(hashtableIncrementalFindState *state, void **found);
+void hashtableIncrementalFindBatch(hashtableIncrementalFindState *states, int width);
 
 /* Iteration & scan */
 size_t hashtableScan(hashtable *ht, size_t cursor, hashtableScanFunction fn, void *privdata);

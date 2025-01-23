@@ -1234,6 +1234,103 @@ int qsortCompareSetsByRevCardinality(const void *s1, const void *s2) {
     return 0;
 }
 
+#define width 1
+void batchLookupInit(int *thread_active, unsigned long *dict_idx) {
+    for (int i = 0; i < width; i++) {
+        thread_active[i] = 0;
+        dict_idx[i] = 1;
+    }
+}
+
+/* Batch optimizations */
+/* Same algorithm used in sinterGenericCommand but use batch iterator for iterating keys and 
+ * batch lookup for searching keys. */
+size_t batchInterGeneric(client* c, robj **sets, 
+                            unsigned long setnum, robj *dstkey, 
+                            robj *dstset, int cardinality_only, 
+                            unsigned long limit, int *only_integers) { 
+    size_t cardinality = 0;
+    int i, active_threads;
+    hashtableIncrementalFindState batch_lookup[width];
+    int thread_active[width];
+    unsigned long dict_idx[width];
+    hashtableIncrementalFindState *thread;
+    hashtableIterator it;
+    char const *str;
+    size_t len;
+    int64_t intobj;
+    batchLookupInit(thread_active, dict_idx);
+    /* Iterate all the elements of the first (smallest) set, and test
+     * the element against all the other sets, if at least one set does
+     * not include the element it is discarded. */
+    hashtableInitIterator(&it, sets[0]->ptr);
+    int iter_done = 0;
+    void *found, *key;
+    while (1) {
+        active_threads = 0;
+        for (i = 0; i < width; i++) {
+            thread = &batch_lookup[i];
+            /* Check prev batch results */
+            if (thread_active[i] && hashtableIncrementalFindGetResult(thread, &found) && dict_idx[i] >= setnum-1) {
+                /* Key exists in all sets */
+                str = found;
+                len = sdslen((char*)str);
+
+                if (cardinality_only) {
+                    cardinality++;
+                    /* We stop the searching after reaching the limit. */
+                    if (limit && cardinality >= limit) {
+                        active_threads = 0;
+                        break;
+                    }
+                } else if (!dstkey) {
+                    addReplyBulkCBuffer(c, str, len);
+                    cardinality++;
+                } else {
+                    if (*only_integers) {
+                        /* It may be an integer although we got it as a string. */
+                        if (string2ll(str, len, (long long *)&intobj)) {
+                            if (dstset->encoding == OBJ_ENCODING_LISTPACK ||
+                                dstset->encoding == OBJ_ENCODING_INTSET) {
+                                /* Adding it as an integer is more efficient. */
+                                str = NULL;
+                            }
+                        } else {
+                            /* It's not an integer */
+                            *only_integers = 0;
+                        }
+                    }
+                    setTypeAddAux(dstset, (char*)str, len, intobj, 1);
+                }
+            }
+            /* Prepare next batch */
+            if (thread_active[i] && hashtableIncrementalFindGetResult(thread, &found) && dict_idx[i] < setnum-1) {
+                /* Key exists in sets [0:dict_idx]. Lookup in the next set */
+                dict_idx[i]++;
+            } else {
+                if (iter_done) {
+                    thread_active[i] = 0;
+                    continue;
+                } else {
+                    if (!hashtableNext(&it, &key)) {
+                        iter_done = 1;
+                        thread_active[i] = 0;
+                        continue;
+                    }
+                    dict_idx[i] = 1;
+                }
+            }
+            thread_active[i] = 1;
+            active_threads++;
+            hashtableIncrementalFindInit(thread, sets[dict_idx[i]]->ptr, key);
+        }
+        if (active_threads == 0) break;
+        hashtableIncrementalFindBatch(batch_lookup, width);
+    }
+    hashtableResetIterator(&it);
+    return cardinality;
+}
+
 /* SINTER / SMEMBERS / SINTERSTORE / SINTERCARD
  *
  * 'cardinality_only' work for SINTERCARD, only return the cardinality
@@ -1330,45 +1427,52 @@ void sinterGenericCommand(client *c,
      * the element against all the other sets, if at least one set does
      * not include the element it is discarded */
     int only_integers = 1;
-    si = setTypeInitIterator(sets[0]);
-    while ((encoding = setTypeNext(si, &str, &len, &intobj)) != -1) {
-        for (j = 1; j < setnum; j++) {
-            if (sets[j] == sets[0]) continue;
-            if (!setTypeIsMemberAux(sets[j], str, len, intobj, encoding == OBJ_ENCODING_HASHTABLE)) break;
-        }
+    unsigned int k = 0;
+    for (; k < setnum; k++) {
+        if (sets[k]->encoding != OBJ_ENCODING_HASHTABLE) break;
+    }
+    if (k == setnum && setnum > 1) {
+        cardinality = batchInterGeneric(c, sets, setnum, dstkey, dstset, cardinality_only, limit, &only_integers);
+    } else {
+        si = setTypeInitIterator(sets[0]);
+        while ((encoding = setTypeNext(si, &str, &len, &intobj)) != -1) {
+            for (j = 1; j < setnum; j++) {
+                if (sets[j] == sets[0]) continue;
+                if (!setTypeIsMemberAux(sets[j], str, len, intobj, encoding == OBJ_ENCODING_HASHTABLE)) break;
+            }
 
-        /* Only take action when all sets contain the member */
-        if (j == setnum) {
-            if (cardinality_only) {
-                cardinality++;
+            /* Only take action when all sets contain the member */
+            if (j == setnum) {
+                if (cardinality_only) {
+                    cardinality++;
 
-                /* We stop the searching after reaching the limit. */
-                if (limit && cardinality >= limit) break;
-            } else if (!dstkey) {
-                if (str != NULL)
-                    addReplyBulkCBuffer(c, str, len);
-                else
-                    addReplyBulkLongLong(c, intobj);
-                cardinality++;
-            } else {
-                if (str && only_integers) {
-                    /* It may be an integer although we got it as a string. */
-                    if (encoding == OBJ_ENCODING_HASHTABLE && string2ll(str, len, (long long *)&intobj)) {
-                        if (dstset->encoding == OBJ_ENCODING_LISTPACK || dstset->encoding == OBJ_ENCODING_INTSET) {
-                            /* Adding it as an integer is more efficient. */
-                            str = NULL;
+                    /* We stop the searching after reaching the limit. */
+                    if (limit && cardinality >= limit) break;
+                } else if (!dstkey) {
+                    if (str != NULL)
+                        addReplyBulkCBuffer(c, str, len);
+                    else
+                        addReplyBulkLongLong(c, intobj);
+                    cardinality++;
+                } else {
+                    if (str && only_integers) {
+                        /* It may be an integer although we got it as a string. */
+                        if (encoding == OBJ_ENCODING_HASHTABLE && string2ll(str, len, (long long *)&intobj)) {
+                            if (dstset->encoding == OBJ_ENCODING_LISTPACK || dstset->encoding == OBJ_ENCODING_INTSET) {
+                                /* Adding it as an integer is more efficient. */
+                                str = NULL;
+                            }
+                        } else {
+                            /* It's not an integer */
+                            only_integers = 0;
                         }
-                    } else {
-                        /* It's not an integer */
-                        only_integers = 0;
                     }
+                    setTypeAddAux(dstset, str, len, intobj, encoding == OBJ_ENCODING_HASHTABLE);
                 }
-                setTypeAddAux(dstset, str, len, intobj, encoding == OBJ_ENCODING_HASHTABLE);
             }
         }
+        setTypeReleaseIterator(si);
     }
-    setTypeReleaseIterator(si);
-
     if (cardinality_only) {
         addReplyLongLong(c, cardinality);
     } else if (dstkey) {
