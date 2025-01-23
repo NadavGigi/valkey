@@ -1644,41 +1644,6 @@ int hashtableIncrementalFindGetResult(hashtableIncrementalFindState *state, void
     }
 }
 
-#define HashTableMaxBatchSize 8  // Adjust as needed
-
-typedef struct {
-    const void* key;
-    hashtable *ht;
-    hashtableIncrementalFindState state;
-} hashtableLookupItem;
-
-typedef struct {
-    int width;
-    hashtableLookupItem items[HashTableMaxBatchSize];
-} hashtableBatchLookup;
-
-void hashtableFindBatch(hashtableBatchLookup *batch_lookup) {
-    int i, done = 0;
-    hashtableLookupItem *item;
-    assert(batch_lookup->width <= HashTableMaxBatchSize);
-    for (i = 0; i < batch_lookup->width; i++) {
-        item = &batch_lookup->items[i];
-        if (!item->key || !item->ht) {
-            done++;
-            continue;
-        }
-        hashtableIncrementalFindInit(&item->state, item->ht, item->key);
-    }
-    while (done < batch_lookup->width) {
-        for (i = 0; i < batch_lookup->width; i++) {
-            item = &batch_lookup->items[i];
-            if (!hashtableIncrementalFindStep(&item->state)) {
-                done++;
-            }
-        }
-    }
-}
-
 /* --- Scan --- */
 
 /* Scan is a stateless iterator. It works with a cursor that is returned to the
