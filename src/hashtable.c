@@ -942,6 +942,9 @@ static void prefetchBucketEntries(bucket *b) {
             valkey_prefetch(b->entries[pos]);
         }
     }
+    if (b->chained) {
+        valkey_prefetch(getChildBucket(b));
+    }
 }
 
 /* Returns the child bucket if chained, otherwise the next bucket in the table. returns NULL if neither exists. */
@@ -973,9 +976,8 @@ static void prefetchNextBucketEntries(iter *iter, bucket *current_bucket) {
     bucket *next_bucket = getNextBucket(current_bucket, next_index, iter->hashtable, iter->table);
     if (next_bucket) {
         prefetchBucketEntries(next_bucket);
-        bucket *next_next_bucket = getNextBucket(next_bucket, next_index + 1, iter->hashtable, iter->table);
-        if (next_next_bucket) {
-            valkey_prefetch(next_next_bucket);
+        if (!next_bucket->chained) {
+            valkey_prefetch(getNextBucket(next_bucket, next_index + 1, iter->hashtable, iter->table));
         }
     }
 }
@@ -1712,10 +1714,21 @@ size_t hashtableScanDefrag(hashtable *ht, size_t cursor, hashtableScanFunction f
         /* Emit entries at the cursor index. */
         size_t mask = expToMask(ht->bucket_exp[0]);
         bucket *b = &ht->tables[0][cursor & mask];
+        int first_bucket_in_chain = 1;
+        cursor = nextCursor(cursor, mask);
+        size_t index = (cursor & mask);
+        valkey_prefetch(&ht->tables[0][index]);
         do {
             if (b->presence != 0) {
+                if (first_bucket_in_chain) {
+                    prefetchBucketEntries(b);
+                    first_bucket_in_chain = 0;
+                }
                 int pos;
                 for (pos = 0; pos < ENTRIES_PER_BUCKET; pos++) {
+                    if (pos == ENTRIES_PER_BUCKET / 2) {
+                        prefetchBucketEntries(getNextBucket(b, index - 1, ht, 0));
+                    }
                     if (isPositionFilled(b, pos)) {
                         void *emit = emit_ref ? &b->entries[pos] : b->entries[pos];
                         fn(privdata, emit);
@@ -1752,6 +1765,7 @@ size_t hashtableScanDefrag(hashtable *ht, size_t cursor, hashtableScanFunction f
             bucket *b = &ht->tables[table_small][idx];
             do {
                 if (b->presence) {
+                    prefetchBucketEntries(b);
                     for (int pos = 0; pos < ENTRIES_PER_BUCKET; pos++) {
                         if (isPositionFilled(b, pos)) {
                             void *emit = emit_ref ? &b->entries[pos] : b->entries[pos];
@@ -1782,6 +1796,7 @@ size_t hashtableScanDefrag(hashtable *ht, size_t cursor, hashtableScanFunction f
                 bucket *b = &ht->tables[table_large][idx];
                 do {
                     if (b->presence) {
+                        prefetchBucketEntries(b);
                         for (int pos = 0; pos < ENTRIES_PER_BUCKET; pos++) {
                             if (isPositionFilled(b, pos)) {
                                 void *emit = emit_ref ? &b->entries[pos] : b->entries[pos];
