@@ -1537,16 +1537,19 @@ void hashtableTwoPhasePopDelete(hashtable *ht, hashtablePosition *pos) {
  * hashtableIncrementalFindStep on them in a round-robin order until all of them
  * are complete. Finally, if necessary, call hashtableIncrementalFindGetResult.
  */
+void hashtableDump(hashtable *hashtable);
 void hashtableIncrementalFindInit(hashtableIncrementalFindState *state, hashtable *ht, const void *key) {
     incrementalFind *data = incrementalFindFromOpaque(state);
     if (hashtableSize(ht) == 0) {
         data->state = HASHTABLE_NOT_FOUND;
     } else {
+        hashtableDump(ht);
         data->state = HASHTABLE_NEXT_BUCKET;
         data->bucket = NULL;
         data->hashtable = ht;
         data->key = key;
         data->hash = hashKey(ht, key);
+        printf("key - %s state- %d\n",(char*)key, data->state);
     }
 }
 
@@ -1642,6 +1645,21 @@ int hashtableIncrementalFindGetResult(hashtableIncrementalFindState *state, void
         assert(data->state == HASHTABLE_NOT_FOUND);
         return 0;
     }
+}
+
+void hashtableIncrementalFindBatch(hashtableIncrementalFindState *states, int width) {
+    size_t num_left;
+    do {
+        num_left = width;
+        for (int i = 0; i < width; i++) {
+            
+            printf("key - %d\n",i);
+            if (hashtableIncrementalFindStep(&states[i]) == 0) {
+                num_left--;
+            }
+        }
+    } while (num_left > 0);
+    printf("out\n");
 }
 
 /* --- Scan --- */
