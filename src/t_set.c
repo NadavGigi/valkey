@@ -1249,18 +1249,18 @@ typedef enum {
 typedef struct {
     LookupState state;
     hashtableIncrementalFindState find_state;
-    unsigned long set_idx;
+    size_t set_idx;
     void *key;
 } LookupInfo;
 
 typedef struct SetOperationContext {
     robj **sets;
-    unsigned long setnum;
+    size_t setnum;
     client *c;
     robj *dstkey;
     robj *dstset;
     int cardinality_only;
-    unsigned long limit;
+    size_t limit;
     int *only_integers;
 } SetOperationContext;
 
@@ -1413,10 +1413,10 @@ size_t batchSetsGeneric(SetOperationContext *ctx, LookupProcessResultFunc proces
  */
 void sinterGenericCommand(client *c,
                           robj **setkeys,
-                          unsigned long setnum,
+                          size_t setnum,
                           robj *dstkey,
                           int cardinality_only,
-                          unsigned long limit) {
+                          size_t limit) {
     robj **sets = zmalloc(sizeof(robj *) * setnum);
     setTypeIterator *si;
     robj *dstset = NULL;
@@ -1424,7 +1424,7 @@ void sinterGenericCommand(client *c,
     size_t len;
     int64_t intobj;
     void *replylen = NULL;
-    unsigned long j, cardinality = 0;
+    size_t j, cardinality = 0;
     int encoding, empty = 0, use_prefetch = 1;
 
     for (j = 0; j < setnum; j++) {
