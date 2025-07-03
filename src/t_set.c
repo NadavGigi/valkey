@@ -1359,8 +1359,7 @@ typedef int (*LookupProcessResultFunc)(LookupInfo *lookup, SetOperationContext *
 /* Perform hashtable lookups with prefetching to reduce memory access time.
  * This function issues multiple hash table lookups before processing their results,
  * improving efficiency for large set operations. */
-size_t batchSetsGeneric(SetOperationContext *ctx, LookupProcessResultFunc process_result)
-{
+size_t batchSetsGeneric(SetOperationContext *ctx, LookupProcessResultFunc process_result) {
     size_t cardinality = 0;
     int prefetch_size = server.prefetch_batch_max_size, iterator_finished = 0, lookup_active_count;
     LookupInfo lookups[prefetch_size];
@@ -1373,30 +1372,30 @@ size_t batchSetsGeneric(SetOperationContext *ctx, LookupProcessResultFunc proces
             LookupInfo *lookup = &lookups[i];
             do {
                 switch (lookup->state) {
-                    case LOOKUP_INIT:
-                        if (iterator_finished || !assignLookupWithNewElement(lookup, &it, ctx->sets)) {
-                            iterator_finished = 1;
-                            lookup->state = LOOKUP_DONE;
-                        } else {
-                            lookup->state = LOOKUP_FIND;
-                        }
-                        break;
-                    case LOOKUP_FIND: /* fall through */
-                    case LOOKUP_PREFETCH:
-                        if (hashtableIncrementalFindStep(&lookup->find_state)) {
-                            lookup_active_count++;
-                            lookup->state = LOOKUP_PREFETCH;
-                        } else {
-                            lookup->state = LOOKUP_PROCESS_RESULT;
-                        }
-                        break;
-                    case LOOKUP_PROCESS_RESULT:
-                        if(process_result(lookup, ctx, &cardinality) == 0) {
-                            return cardinality;
-                        }
-                        break;
-                    case LOOKUP_DONE:
-                        break;
+                case LOOKUP_INIT:
+                    if (iterator_finished || !assignLookupWithNewElement(lookup, &it, ctx->sets)) {
+                        iterator_finished = 1;
+                        lookup->state = LOOKUP_DONE;
+                    } else {
+                        lookup->state = LOOKUP_FIND;
+                    }
+                    break;
+                case LOOKUP_FIND: /* fall through */
+                case LOOKUP_PREFETCH:
+                    if (hashtableIncrementalFindStep(&lookup->find_state)) {
+                        lookup_active_count++;
+                        lookup->state = LOOKUP_PREFETCH;
+                    } else {
+                        lookup->state = LOOKUP_PROCESS_RESULT;
+                    }
+                    break;
+                case LOOKUP_PROCESS_RESULT:
+                    if (process_result(lookup, ctx, &cardinality) == 0) {
+                        return cardinality;
+                    }
+                    break;
+                case LOOKUP_DONE:
+                    break;
                 }
             } while (lookup->state != LOOKUP_DONE && lookup->state != LOOKUP_PREFETCH);
         }
@@ -1511,8 +1510,7 @@ void sinterGenericCommand(client *c,
         .dstset = dstset,
         .cardinality_only = cardinality_only,
         .limit = limit,
-        .only_integers = &only_integers
-    };
+        .only_integers = &only_integers};
     if (use_prefetch && setnum > 1) {
         cardinality = batchSetsGeneric(&ctx, handleLookupProcessResultInter);
     } else {
@@ -1726,8 +1724,7 @@ void sunionDiffGenericCommand(client *c, robj **setkeys, int setnum, robj *dstke
                 .dstset = dstset,
                 .cardinality_only = 0,
                 .limit = 0,
-                .only_integers = NULL
-            };
+                .only_integers = NULL};
             cardinality = batchSetsGeneric(&ctx, handleLookupProcessResultDiff);
         } else {
             si = setTypeInitIterator(sets[0]);
