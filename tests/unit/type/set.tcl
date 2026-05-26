@@ -1168,6 +1168,86 @@ foreach type {single multiple single_multiple} {
     }
 }
 
+# Run SINTER/SDIFF/SUNION tests with all sets forced to hashtable encoding
+# to exercise the prefetch optimization code path.
+start_server {
+    tags {"set"}
+    overrides {
+        "set-max-intset-entries" 0
+        "set-max-listpack-entries" 0
+        "set-max-listpack-value" 0
+    }
+} {
+    proc create_set {key entries} {
+        r del $key
+        foreach entry $entries { r sadd $key $entry }
+    }
+
+    # Replicate the set creation from the main test block
+    for {set i 1} {$i <= 5} {incr i} {
+        r del [format "set%d{t}" $i]
+    }
+    for {set i 0} {$i < 200} {incr i} {
+        r sadd set1{t} $i
+        r sadd set2{t} [expr $i+195]
+    }
+    foreach i {199 195 1000 2000} {
+        r sadd set3{t} $i
+    }
+    for {set i 5} {$i < 200} {incr i} {
+        r sadd set4{t} $i
+    }
+    r sadd set5{t} 0
+    set large foo
+    for {set i 1} {$i <= 5} {incr i} {
+        r sadd [format "set%d{t}" $i] $large
+    }
+
+    test "SINTER against three sets - hashtable-all" {
+        assert_equal [list 195 199 $large] [lsort [r sinter set1{t} set2{t} set3{t}]]
+    }
+
+    test "SINTERCARD with limit - hashtable-all" {
+        assert_equal 6 [r sintercard 2 set1{t} set2{t}]
+        assert_equal 3 [r sintercard 2 set1{t} set2{t} limit 3]
+    }
+
+    test "SDIFF with three sets - hashtable-all" {
+        assert_equal {1 2 3 4} [lsort [r sdiff set1{t} set4{t} set5{t}]]
+    }
+
+    test "SDIFFSTORE with three sets - hashtable-all" {
+        r sdiffstore setres{t} set1{t} set4{t} set5{t}
+        assert_equal {1 2 3 4} [lsort [r smembers setres{t}]]
+    }
+
+    test "SDIFF fuzzing - hashtable-all" {
+        for {set j 0} {$j < 100} {incr j} {
+            unset -nocomplain s
+            array set s {}
+            set args {}
+            set num_sets [expr {[randomInt 10]+1}]
+            for {set i 0} {$i < $num_sets} {incr i} {
+                set num_elements [randomInt 100]
+                r del set_$i{t}
+                lappend args set_$i{t}
+                while {$num_elements} {
+                    set ele [randomValue]
+                    r sadd set_$i{t} $ele
+                    if {$i == 0} {
+                        set s($ele) x
+                    } else {
+                        unset -nocomplain s($ele)
+                    }
+                    incr num_elements -1
+                }
+            }
+            set result [lsort [r sdiff {*}$args]]
+            assert_equal $result [lsort [array names s]]
+        }
+    }
+}
+
 run_solo {set-large-memory} {
 start_server [list overrides [list save ""] tags {"large-memory"}] {
 

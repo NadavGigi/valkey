@@ -1238,6 +1238,151 @@ int qsortCompareSetsByRevCardinality(const void *s1, const void *s2) {
     return 0;
 }
 
+typedef enum {
+    BATCH_LOOKUP_INIT,
+    BATCH_LOOKUP_FIND,
+    BATCH_LOOKUP_PREFETCH,
+    BATCH_LOOKUP_PROCESS_RESULT,
+    BATCH_LOOKUP_DONE
+} BatchLookupState;
+
+typedef struct {
+    BatchLookupState state;
+    hashtableIncrementalFindState find_state;
+    size_t set_idx;
+    void *key;
+} BatchLookupEntry;
+
+typedef struct {
+    robj **sets;
+    size_t setnum;
+    client *c;
+    robj *dstkey;
+    robj *dstset;
+    int cardinality_only;
+    unsigned long limit;
+    int *only_integers;
+} SetOpCtx;
+
+/* Process lookup result for DIFF: add element only if NOT found in any other set.
+ * Returns 1 to continue, 0 to stop. */
+static int handleResultDiff(BatchLookupEntry *entry, SetOpCtx *ctx, size_t *cardinality) {
+    if (hashtableIncrementalFindGetResult(&entry->find_state, NULL)) {
+        entry->state = BATCH_LOOKUP_INIT;
+    } else if (entry->set_idx < ctx->setnum - 1) {
+        entry->set_idx++;
+        hashtableIncrementalFindInit(&entry->find_state, ctx->sets[entry->set_idx]->ptr, entry->key);
+        entry->state = BATCH_LOOKUP_FIND;
+    } else {
+        *cardinality += setTypeAddAux(ctx->dstset, entry->key, sdslen(entry->key), 0, 1);
+        entry->state = BATCH_LOOKUP_INIT;
+    }
+    return 1;
+}
+
+/* Process lookup result for INTER: add element only if found in ALL other sets.
+ * Returns 1 to continue, 0 to stop (limit reached). */
+static int handleResultInter(BatchLookupEntry *entry, SetOpCtx *ctx, size_t *cardinality) {
+    if (!hashtableIncrementalFindGetResult(&entry->find_state, NULL)) {
+        entry->state = BATCH_LOOKUP_INIT;
+    } else if (entry->set_idx < ctx->setnum - 1) {
+        entry->set_idx++;
+        hashtableIncrementalFindInit(&entry->find_state, ctx->sets[entry->set_idx]->ptr, entry->key);
+        entry->state = BATCH_LOOKUP_FIND;
+    } else {
+        if (ctx->cardinality_only) {
+            (*cardinality)++;
+            if (ctx->limit && *cardinality >= ctx->limit) return 0;
+        } else if (!ctx->dstkey) {
+            addReplyBulkCBuffer(ctx->c, entry->key, sdslen(entry->key));
+            (*cardinality)++;
+        } else {
+            char *str = entry->key;
+            size_t len = sdslen(str);
+            int64_t intval;
+            if (*ctx->only_integers && string2ll(str, len, (long long *)&intval)) {
+                if (ctx->dstset->encoding == OBJ_ENCODING_LISTPACK ||
+                    ctx->dstset->encoding == OBJ_ENCODING_INTSET) {
+                    setTypeAddAux(ctx->dstset, NULL, 0, intval, 0);
+                } else {
+                    setTypeAddAux(ctx->dstset, str, len, 0, 1);
+                }
+            } else {
+                *ctx->only_integers = 0;
+                setTypeAddAux(ctx->dstset, str, len, 0, 1);
+            }
+            (*cardinality)++;
+        }
+        entry->state = BATCH_LOOKUP_INIT;
+    }
+    return 1;
+}
+
+typedef int (*SetOpResultHandler)(BatchLookupEntry *entry, SetOpCtx *ctx, size_t *cardinality);
+
+/* Generic set operation with batch prefetching.
+ * Iterates sets[0] and checks membership in sets[1..setnum-1].
+ * The handler callback decides what to do with completed lookups. */
+static size_t setOpWithPrefetch(SetOpCtx *ctx, SetOpResultHandler handler) {
+    size_t cardinality = 0;
+    int prefetch_size = server.prefetch_batch_max_size;
+    BatchLookupEntry lookups[prefetch_size];
+    hashtableIterator iter;
+    bool iterator_exhausted = false;
+
+    for (int i = 0; i < prefetch_size; i++) {
+        lookups[i].state = BATCH_LOOKUP_INIT;
+    }
+
+    hashtableInitIterator(&iter, ctx->sets[0]->ptr, 0);
+
+    int active_count;
+    do {
+        active_count = 0;
+        for (int i = 0; i < prefetch_size; i++) {
+            BatchLookupEntry *entry = &lookups[i];
+
+            do {
+                switch (entry->state) {
+                case BATCH_LOOKUP_INIT:
+                    if (iterator_exhausted || !hashtableNext(&iter, &entry->key)) {
+                        iterator_exhausted = true;
+                        entry->state = BATCH_LOOKUP_DONE;
+                    } else {
+                        entry->set_idx = 1;
+                        hashtableIncrementalFindInit(&entry->find_state, ctx->sets[entry->set_idx]->ptr, entry->key);
+                        entry->state = BATCH_LOOKUP_FIND;
+                    }
+                    break;
+
+                case BATCH_LOOKUP_FIND: /* fall through */
+                case BATCH_LOOKUP_PREFETCH:
+                    if (hashtableIncrementalFindStep(&entry->find_state)) {
+                        active_count++;
+                        entry->state = BATCH_LOOKUP_PREFETCH;
+                    } else {
+                        entry->state = BATCH_LOOKUP_PROCESS_RESULT;
+                    }
+                    break;
+
+                case BATCH_LOOKUP_PROCESS_RESULT:
+                    if (!handler(entry, ctx, &cardinality)) {
+                        hashtableResetIterator(&iter);
+                        return cardinality;
+                    }
+                    break;
+
+                case BATCH_LOOKUP_DONE:
+                    break;
+                }
+            } while (entry->state != BATCH_LOOKUP_DONE && entry->state != BATCH_LOOKUP_PREFETCH);
+        }
+    } while (active_count > 0);
+
+    hashtableResetIterator(&iter);
+    return cardinality;
+}
+
 /* SINTER / SMEMBERS / SINTERSTORE / SINTERCARD
  *
  * 'cardinality_only' work for SINTERCARD, only return the cardinality
@@ -1261,6 +1406,7 @@ void sinterGenericCommand(client *c,
     void *replylen = NULL;
     unsigned long j, cardinality = 0;
     int encoding, empty = 0;
+    bool use_prefetch = (setnum > 1);
 
     for (j = 0; j < setnum; j++) {
         robj *setobj = lookupKeyRead(c->db, setkeys[j]);
@@ -1273,6 +1419,9 @@ void sinterGenericCommand(client *c,
         if (checkType(c, setobj, OBJ_SET)) {
             zfree(sets);
             return;
+        }
+        if (setobj->encoding != OBJ_ENCODING_HASHTABLE) {
+            use_prefetch = false;
         }
         sets[j] = setobj;
     }
@@ -1334,44 +1483,56 @@ void sinterGenericCommand(client *c,
      * the element against all the other sets, if at least one set does
      * not include the element it is discarded */
     int only_integers = 1;
-    si = setTypeInitIterator(sets[0]);
-    while ((encoding = setTypeNext(si, &str, &len, &intobj)) != -1) {
-        for (j = 1; j < setnum; j++) {
-            if (sets[j] == sets[0]) continue;
-            if (!setTypeIsMemberAux(sets[j], str, len, intobj, encoding == OBJ_ENCODING_HASHTABLE)) break;
-        }
+    if (use_prefetch) {
+        SetOpCtx ctx = {.sets = sets,
+                        .setnum = setnum,
+                        .c = c,
+                        .dstkey = dstkey,
+                        .dstset = dstset,
+                        .cardinality_only = cardinality_only,
+                        .limit = limit,
+                        .only_integers = &only_integers};
+        cardinality = setOpWithPrefetch(&ctx, handleResultInter);
+    } else {
+        si = setTypeInitIterator(sets[0]);
+        while ((encoding = setTypeNext(si, &str, &len, &intobj)) != -1) {
+            for (j = 1; j < setnum; j++) {
+                if (sets[j] == sets[0]) continue;
+                if (!setTypeIsMemberAux(sets[j], str, len, intobj, encoding == OBJ_ENCODING_HASHTABLE)) break;
+            }
 
-        /* Only take action when all sets contain the member */
-        if (j == setnum) {
-            if (cardinality_only) {
-                cardinality++;
+            /* Only take action when all sets contain the member */
+            if (j == setnum) {
+                if (cardinality_only) {
+                    cardinality++;
 
-                /* We stop the searching after reaching the limit. */
-                if (limit && cardinality >= limit) break;
-            } else if (!dstkey) {
-                if (str != NULL)
-                    addReplyBulkCBuffer(c, str, len);
-                else
-                    addReplyBulkLongLong(c, intobj);
-                cardinality++;
-            } else {
-                if (str && only_integers) {
-                    /* It may be an integer although we got it as a string. */
-                    if (encoding == OBJ_ENCODING_HASHTABLE && string2ll(str, len, (long long *)&intobj)) {
-                        if (dstset->encoding == OBJ_ENCODING_LISTPACK || dstset->encoding == OBJ_ENCODING_INTSET) {
-                            /* Adding it as an integer is more efficient. */
-                            str = NULL;
+                    /* We stop the searching after reaching the limit. */
+                    if (limit && cardinality >= limit) break;
+                } else if (!dstkey) {
+                    if (str != NULL)
+                        addReplyBulkCBuffer(c, str, len);
+                    else
+                        addReplyBulkLongLong(c, intobj);
+                    cardinality++;
+                } else {
+                    if (str && only_integers) {
+                        /* It may be an integer although we got it as a string. */
+                        if (encoding == OBJ_ENCODING_HASHTABLE && string2ll(str, len, (long long *)&intobj)) {
+                            if (dstset->encoding == OBJ_ENCODING_LISTPACK || dstset->encoding == OBJ_ENCODING_INTSET) {
+                                /* Adding it as an integer is more efficient. */
+                                str = NULL;
+                            }
+                        } else {
+                            /* It's not an integer */
+                            only_integers = 0;
                         }
-                    } else {
-                        /* It's not an integer */
-                        only_integers = 0;
                     }
+                    setTypeAddAux(dstset, str, len, intobj, encoding == OBJ_ENCODING_HASHTABLE);
                 }
-                setTypeAddAux(dstset, str, len, intobj, encoding == OBJ_ENCODING_HASHTABLE);
             }
         }
+        setTypeReleaseIterator(si);
     }
-    setTypeReleaseIterator(si);
 
     if (cardinality_only) {
         addReplyLongLong(c, cardinality);
@@ -1454,7 +1615,8 @@ void sunionDiffGenericCommand(client *c, robj **setkeys, int setnum, robj *dstke
     int encoding;
     int j, cardinality = 0;
     int diff_algo = 1;
-    int sameset = 0;
+    int sameset = 0, existing_sets = 0;
+    bool use_prefetch = true;
 
     for (j = 0; j < setnum; j++) {
         robj *setobj = lookupKeyRead(c->db, setkeys[j]);
@@ -1506,6 +1668,10 @@ void sunionDiffGenericCommand(client *c, robj **setkeys, int setnum, robj *dstke
 
             algo_one_work += setTypeSize(sets[0]);
             algo_two_work += setTypeSize(sets[j]);
+            if (sets[j]->encoding != OBJ_ENCODING_HASHTABLE) {
+                use_prefetch = false;
+            }
+            existing_sets++;
         }
 
         /* Algorithm 1 has better constant times and performs less operations
@@ -1553,19 +1719,26 @@ void sunionDiffGenericCommand(client *c, robj **setkeys, int setnum, robj *dstke
          *
          * This way we perform at max N*M operations, where N is the size of
          * the first set, and M the number of sets. */
-        si = setTypeInitIterator(sets[0]);
-        while ((encoding = setTypeNext(si, &str, &len, &llval)) != -1) {
-            for (j = 1; j < setnum; j++) {
-                if (!sets[j]) continue;        /* no key is an empty set. */
-                if (sets[j] == sets[0]) break; /* same set! */
-                if (setTypeIsMemberAux(sets[j], str, len, llval, encoding == OBJ_ENCODING_HASHTABLE)) break;
+        if (use_prefetch && existing_sets > 1) {
+            SetOpCtx ctx = {.sets = sets,
+                            .setnum = existing_sets,
+                            .dstset = dstset};
+            cardinality = setOpWithPrefetch(&ctx, handleResultDiff);
+        } else {
+            si = setTypeInitIterator(sets[0]);
+            while ((encoding = setTypeNext(si, &str, &len, &llval)) != -1) {
+                for (j = 1; j < setnum; j++) {
+                    if (!sets[j]) continue;        /* no key is an empty set. */
+                    if (sets[j] == sets[0]) break; /* same set! */
+                    if (setTypeIsMemberAux(sets[j], str, len, llval, encoding == OBJ_ENCODING_HASHTABLE)) break;
+                }
+                if (j == setnum) {
+                    /* There is no other set with this element. Add it. */
+                    cardinality += setTypeAddAux(dstset, str, len, llval, encoding == OBJ_ENCODING_HASHTABLE);
+                }
             }
-            if (j == setnum) {
-                /* There is no other set with this element. Add it. */
-                cardinality += setTypeAddAux(dstset, str, len, llval, encoding == OBJ_ENCODING_HASHTABLE);
-            }
+            setTypeReleaseIterator(si);
         }
-        setTypeReleaseIterator(si);
     } else if (op == SET_OP_DIFF && sets[0] && diff_algo == 2) {
         /* DIFF Algorithm 2:
          *
