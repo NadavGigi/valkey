@@ -1168,6 +1168,169 @@ foreach type {single multiple single_multiple} {
     }
 }
 
+# Run SINTER/SDIFF/SUNION tests with all sets forced to hashtable encoding
+# to exercise the prefetch optimization code path.
+start_server {
+    tags {"set"}
+    overrides {
+        "set-max-intset-entries" 0
+        "set-max-listpack-entries" 0
+        "set-max-listpack-value" 0
+    }
+} {
+    proc create_set {key entries} {
+        r del $key
+        foreach entry $entries { r sadd $key $entry }
+    }
+
+    # Replicate the set creation from the main test block
+    for {set i 1} {$i <= 5} {incr i} {
+        r del [format "set%d{t}" $i]
+    }
+    for {set i 0} {$i < 200} {incr i} {
+        r sadd set1{t} $i
+        r sadd set2{t} [expr $i+195]
+    }
+    foreach i {199 195 1000 2000} {
+        r sadd set3{t} $i
+    }
+    for {set i 5} {$i < 200} {incr i} {
+        r sadd set4{t} $i
+    }
+    r sadd set5{t} 0
+    set large foo
+    for {set i 1} {$i <= 5} {incr i} {
+        r sadd [format "set%d{t}" $i] $large
+    }
+
+    test "SINTER with two sets - hashtable-all" {
+        assert_equal [list 195 196 197 198 199 $large] [lsort [r sinter set1{t} set2{t}]]
+    }
+
+    test "SINTERCARD with two sets - hashtable-all" {
+        assert_equal 6 [r sintercard 2 set1{t} set2{t}]
+        assert_equal 3 [r sintercard 2 set1{t} set2{t} limit 3]
+        assert_equal 6 [r sintercard 2 set1{t} set2{t} limit 10]
+    }
+
+    test "SINTERSTORE with two sets - hashtable-all" {
+        r sinterstore setres{t} set1{t} set2{t}
+        assert_equal [list 195 196 197 198 199 $large] [lsort [r smembers setres{t}]]
+    }
+
+    test "SUNION with two sets - hashtable-all" {
+        set expected [lsort -uniq "[r smembers set1{t}] [r smembers set2{t}]"]
+        assert_equal $expected [lsort [r sunion set1{t} set2{t}]]
+    }
+
+    test "SINTER against three sets - hashtable-all" {
+        assert_equal [list 195 199 $large] [lsort [r sinter set1{t} set2{t} set3{t}]]
+    }
+
+    test "SINTERCARD against three sets - hashtable-all" {
+        assert_equal 3 [r sintercard 3 set1{t} set2{t} set3{t}]
+        assert_equal 2 [r sintercard 3 set1{t} set2{t} set3{t} limit 2]
+        assert_equal 3 [r sintercard 3 set1{t} set2{t} set3{t} limit 10]
+    }
+
+    test "SUNION with non existing keys - hashtable-all" {
+        set expected [lsort -uniq "[r smembers set1{t}] [r smembers set2{t}]"]
+        assert_equal $expected [lsort [r sunion nokey1{t} set1{t} set2{t} nokey2{t}]]
+    }
+
+    test "SDIFF with two sets - hashtable-all" {
+        assert_equal {0 1 2 3 4} [lsort [r sdiff set1{t} set4{t}]]
+    }
+
+    test "SDIFF with three sets - hashtable-all" {
+        assert_equal {1 2 3 4} [lsort [r sdiff set1{t} set4{t} set5{t}]]
+    }
+
+    test "SDIFFSTORE with three sets - hashtable-all" {
+        r sdiffstore setres{t} set1{t} set4{t} set5{t}
+        assert_equal {1 2 3 4} [lsort [r smembers setres{t}]]
+    }
+
+    test "SINTER/SUNION/SDIFF with three same sets - hashtable-all" {
+        set expected [lsort "[r smembers set1{t}]"]
+        assert_equal $expected [lsort [r sinter set1{t} set1{t} set1{t}]]
+        assert_equal $expected [lsort [r sunion set1{t} set1{t} set1{t}]]
+        assert_equal {} [lsort [r sdiff set1{t} set1{t} set1{t}]]
+    }
+
+    test "SDIFF with first set empty - hashtable-all" {
+        r del set1{t} set2{t} set3{t}
+        r sadd set2{t} 1 2 3 4
+        r sadd set3{t} a b c d
+        r sdiff set1{t} set2{t} set3{t}
+    } {}
+
+    test "SDIFF with same set two times - hashtable-all" {
+        r del set1
+        r sadd set1 a b c 1 2 3 4 5 6
+        r sdiff set1 set1
+    } {}
+
+    test "SDIFF fuzzing - hashtable-all" {
+        for {set j 0} {$j < 100} {incr j} {
+            unset -nocomplain s
+            array set s {}
+            set args {}
+            set num_sets [expr {[randomInt 10]+1}]
+            for {set i 0} {$i < $num_sets} {incr i} {
+                set num_elements [randomInt 100]
+                r del set_$i{t}
+                lappend args set_$i{t}
+                while {$num_elements} {
+                    set ele [randomValue]
+                    r sadd set_$i{t} $ele
+                    if {$i == 0} {
+                        set s($ele) x
+                    } else {
+                        unset -nocomplain s($ele)
+                    }
+                    incr num_elements -1
+                }
+            }
+            set result [lsort [r sdiff {*}$args]]
+            assert_equal $result [lsort [array names s]]
+        }
+    }
+
+    test "SDIFF should handle non existing key as empty - hashtable-all" {
+        r del set1{t} set2{t} set3{t}
+        r sadd set1{t} a b c
+        r sadd set2{t} b c d
+        assert_equal {a} [lsort [r sdiff set1{t} set2{t} set3{t}]]
+        assert_equal {} [lsort [r sdiff set3{t} set2{t} set1{t}]]
+    }
+
+    test "SINTER should handle non existing key as empty - hashtable-all" {
+        r del set1{t} set2{t} set3{t}
+        r sadd set1{t} a b c
+        r sadd set2{t} b c d
+        r sinter set1{t} set2{t} set3{t}
+    } {}
+
+    test "SINTERSTORE against non existing keys should delete dstkey - hashtable-all" {
+        r set setres{t} xxx
+        assert_equal 0 [r sinterstore setres{t} foo111{t} bar222{t}]
+        assert_equal 0 [r exists setres{t}]
+    }
+
+    test "SUNIONSTORE against non existing keys should delete dstkey - hashtable-all" {
+        r set setres{t} xxx
+        assert_equal 0 [r sunionstore setres{t} foo111{t} bar222{t}]
+        assert_equal 0 [r exists setres{t}]
+    }
+
+    test "SDIFFSTORE against non existing keys should delete dstkey - hashtable-all" {
+        r set setres{t} xxx
+        assert_equal 0 [r sdiffstore setres{t} foo111{t} bar222{t}]
+        assert_equal 0 [r exists setres{t}]
+    }
+}
+
 run_solo {set-large-memory} {
 start_server [list overrides [list save ""] tags {"large-memory"}] {
 
